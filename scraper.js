@@ -281,9 +281,22 @@ async function readSnapshot(file) {
   }
 }
 
+function hkTimestamp() {
+  return new Date().toLocaleString('en-GB', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
 async function main() {
   const targets = JSON.parse(await fs.readFile('urls.json', 'utf8'));
   await fs.mkdir(SNAPSHOT_DIR, { recursive: true });
+  const summary = [];
 
   // Group targets by origin — one shared context per origin so we only set delivery once.
   const byOrigin = new Map();
@@ -362,6 +375,7 @@ async function main() {
             `suspicious 0-item result (prev had ${prev.length}) — skipping diff + snapshot update`,
           );
           hadError = true;
+          summary.push({ slug: t.slug, count: null, note: `skipped (soft-block, prev=${prev.length})` });
           continue;
         }
 
@@ -381,9 +395,11 @@ async function main() {
         }
 
         await fs.writeFile(snapPath, JSON.stringify(items, null, 2));
+        summary.push({ slug: t.slug, count: items.length });
       } catch (err) {
         hadError = true;
         console.error(`[${t.slug}] error:`, err.message);
+        summary.push({ slug: t.slug, count: null, note: `error: ${err.message.slice(0, 60)}` });
       }
     }
 
@@ -391,6 +407,19 @@ async function main() {
   }
 
   await browser.close();
+
+  // Heartbeat: one compact message so the user always knows when the last run
+  // happened, even if nothing changed across all three sources.
+  const lines = [`⏱ <b>Check done</b> — ${hkTimestamp()} HKT`];
+  for (const s of summary) {
+    if (s.count === null) {
+      lines.push(`• ${escapeHtml(s.slug)}: ⚠️ ${escapeHtml(s.note || 'unknown')}`);
+    } else {
+      lines.push(`• ${escapeHtml(s.slug)}: ${s.count} items`);
+    }
+  }
+  await sendTelegram(lines.join('\n'));
+
   if (hadError) process.exitCode = 1;
 }
 
