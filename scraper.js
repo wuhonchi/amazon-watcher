@@ -261,8 +261,23 @@ async function scrapeAllPages(page, url) {
       throw new Error(`Blocked by Amazon after 3 attempts (status=${status}, title="${title}")`);
     }
 
+    // AWS WAF serves a JS CAPTCHA that auto-solves via its own script — we
+    // just have to give it time. Detect the WAF shell by its `gokuProps` /
+    // `awsWafCookieDomainList` globals and wait them out. If they're still
+    // present after 25s, the challenge didn't pass and we treat the page as
+    // blocked (higher up will dump an artifact).
     await page
-      .waitForSelector('[data-component-type="s-search-result"]', { timeout: 30000 })
+      .waitForFunction(
+        () =>
+          typeof window.gokuProps === 'undefined' &&
+          typeof window.awsWafCookieDomainList === 'undefined',
+        null,
+        { timeout: 25000 },
+      )
+      .catch(() => console.log(`  page ${p}: WAF challenge didn't clear in 25s`));
+
+    await page
+      .waitForSelector('[data-component-type="s-search-result"]', { timeout: 45000 })
       .catch(() => {});
 
     const diag = await page.evaluate(() => {
