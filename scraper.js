@@ -131,15 +131,27 @@ function truncate(s, n) {
 
 // ─── Scraper ────────────────────────────────────────────────────────────────
 
-async function setDeliveryCountry(page, origin, countryCode, primeUrl) {
-  // Prime on a URL we'll actually scrape. Navigating from homepage straight
-  // to a `me=<merchant>` search URL right after an address-change gets
-  // soft-blocked (503) by Amazon's bot heuristics — visiting the real
-  // target first avoids that pattern.
-  await page.goto(primeUrl || origin + '/', { waitUntil: 'load', timeout: 90000 });
+async function setDeliveryCountry(page, origin, countryCode, primeUrl, flow = 'target') {
+  // Two priming modes:
+  //   'target'   — go straight to the search URL (works for amazon.com where
+  //                homepage→merchant pivot trips a 503).
+  //   'homepage' — land on the home page, pause, POST, pause again, then the
+  //                caller navigates to the search URL. Looks more like a real
+  //                user clicking "Deliver to" in the header, which amazon.co.uk
+  //                seems to prefer.
+  if (flow === 'homepage') {
+    await page.goto(origin + '/', { waitUntil: 'load', timeout: 90000 });
+  } else {
+    await page.goto(primeUrl || origin + '/', { waitUntil: 'load', timeout: 90000 });
+  }
   await page
     .waitForSelector('#nav-global-location-popover-link', { timeout: 45000 })
     .catch(() => {});
+  if (flow === 'homepage') {
+    const dwell = 8000 + Math.floor(Math.random() * 4000); // 8-12s
+    console.log(`  [homepage flow] browsing for ${dwell}ms before address-change`);
+    await page.waitForTimeout(dwell);
+  }
   const result = await page.evaluate(async (cc) => {
     try {
       const r = await fetch('/portal-migration/hz/glow/address-change?actionSource=glow', {
@@ -162,6 +174,11 @@ async function setDeliveryCountry(page, origin, countryCode, primeUrl) {
     throw new Error(
       `Failed to set delivery country to ${countryCode} at ${origin} (status=${result.status})`,
     );
+  }
+  if (flow === 'homepage') {
+    const dwell = 5000 + Math.floor(Math.random() * 5000); // 5-10s
+    console.log(`  [homepage flow] dwell ${dwell}ms after address-change before search`);
+    await page.waitForTimeout(dwell);
   }
 }
 
@@ -495,11 +512,13 @@ async function main() {
     });
     const page = await context.newPage();
 
-    const deliverTo = group.find((t) => t.deliverTo)?.deliverTo;
+    const deliverTarget = group.find((t) => t.deliverTo);
+    const deliverTo = deliverTarget?.deliverTo;
+    const flow = deliverTarget?.deliveryFlow || 'target';
     if (deliverTo) {
       try {
-        console.log(`\n[${origin}] setting delivery to ${deliverTo}`);
-        await setDeliveryCountry(page, origin, deliverTo, group[0].url);
+        console.log(`\n[${origin}] setting delivery to ${deliverTo} (flow=${flow})`);
+        await setDeliveryCountry(page, origin, deliverTo, group[0].url, flow);
         console.log(`[${origin}] delivery set to ${deliverTo}`);
       } catch (err) {
         console.error(`[${origin}] failed to set delivery: ${err.message}`);

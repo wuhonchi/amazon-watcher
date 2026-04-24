@@ -9,7 +9,8 @@
     "slug": "uk-pokemon-tcg",
     "name": "Pokemon TCG — Amazon.co.uk (ship to HK, Price High→Low)",
     "url": "https://www.amazon.co.uk/s?k=pokemon+tcg&rh=p_6%3AA3P5ROKL5A1OLE%2Cp_123%3A325733&s=price-desc-rank",
-    "deliverTo": "HK"
+    "deliverTo": "HK",
+    "deliveryFlow": "homepage"
   },
   {
     "slug": "ca-pokemon-amazonca",
