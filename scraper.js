@@ -5,8 +5,120 @@ import path from 'node:path';
 const SNAPSHOT_DIR = 'snapshots';
 const TG_TOKEN = process.env.TELEGRAM_TOKEN;
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID;
-const MAX_ITEMS_IN_MESSAGE = 10;
 const MAX_PAGES = 1;
+const MAX_MEDIA = 10; // Telegram sendMediaGroup limit
+const CAPTION_MAX = 1024;
+
+// Default currency per domain (amazon.com $ = USD, amazon.ca $ = CAD, etc.).
+const currencyByHost = {
+  'www.amazon.com': 'USD',
+  'www.amazon.ca': 'CAD',
+  'www.amazon.co.uk': 'GBP',
+};
+
+// Locale per domain so each Amazon site gets the expected Accept-Language.
+const localeByHost = {
+  'www.amazon.com': 'en-US',
+  'www.amazon.ca': 'en-CA',
+  'www.amazon.co.uk': 'en-GB',
+};
+
+// Host → country metadata for Telegram section headers.
+const countryByHost = {
+  'www.amazon.com': { code: 'US', flag: '🇺🇸' },
+  'www.amazon.ca': { code: 'CA', flag: '🇨🇦' },
+  'www.amazon.co.uk': { code: 'UK', flag: '🇬🇧' },
+};
+
+const currencySymbol = {
+  USD: '$',
+  GBP: '£',
+  CAD: 'CA$',
+  HKD: 'HK$',
+  EUR: '€',
+};
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function parsePrice(raw, defaultCurrency) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  let cur = defaultCurrency;
+  if (/^USD\b/i.test(s)) cur = 'USD';
+  else if (/^GBP\b/i.test(s)) cur = 'GBP';
+  else if (/^CAD\b/i.test(s)) cur = 'CAD';
+  else if (/^EUR\b/i.test(s)) cur = 'EUR';
+  else if (/^HKD\b/i.test(s)) cur = 'HKD';
+  else if (/^CA\$/i.test(s)) cur = 'CAD';
+  else if (/^US\$/i.test(s)) cur = 'USD';
+  else if (/^£/.test(s)) cur = 'GBP';
+  else if (/^€/.test(s)) cur = 'EUR';
+  // A plain `$` falls through and uses defaultCurrency.
+
+  const m = s.match(/[\d,]+(?:\.\d+)?/);
+  if (!m) return null;
+  const v = parseFloat(m[0].replace(/,/g, ''));
+  if (!isFinite(v)) return null;
+  return { value: v, currency: cur };
+}
+
+async function fetchHkdRates() {
+  try {
+    const r = await fetch(
+      'https://api.frankfurter.dev/v1/latest?base=HKD&symbols=USD,GBP,CAD,EUR',
+    );
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    const j = await r.json();
+    const rates = {};
+    for (const c of ['USD', 'GBP', 'CAD', 'EUR']) {
+      if (j.rates?.[c]) rates[c] = 1 / j.rates[c];
+    }
+    rates.HKD = 1;
+    console.log('[rates] HKD base:', rates);
+    return rates;
+  } catch (e) {
+    console.error('[rates] fetch failed, using fallback:', e.message);
+    return { USD: 7.78, GBP: 9.80, CAD: 5.60, EUR: 8.45, HKD: 1 };
+  }
+}
+
+function toHkd(value, currency, rates) {
+  const r = rates[currency];
+  if (!r || value == null) return null;
+  return Math.round(value * r);
+}
+
+function fmtNative(value, currency) {
+  if (value == null) return '';
+  const sym = currencySymbol[currency] ?? `${currency} `;
+  return `${sym}${value.toFixed(2)}`;
+}
+
+function hkTimestamp() {
+  return new Date().toLocaleString('en-GB', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function escapeHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function truncate(s, n) {
+  const clean = (s || '').replace(/\s+/g, ' ').trim();
+  return clean.length > n ? clean.slice(0, n - 1) + '…' : clean;
+}
+
+// ─── Scraper ────────────────────────────────────────────────────────────────
 
 async function setDeliveryCountry(page, origin, countryCode, primeUrl) {
   // Prime on a URL we'll actually scrape. Navigating from homepage straight
@@ -16,9 +128,7 @@ async function setDeliveryCountry(page, origin, countryCode, primeUrl) {
   await page.goto(primeUrl || origin + '/', { waitUntil: 'load', timeout: 90000 });
   await page
     .waitForSelector('#nav-global-location-popover-link', { timeout: 45000 })
-    .catch(() => {
-      // Some regions render the header lazily — fall through and try the POST anyway.
-    });
+    .catch(() => {});
   const result = await page.evaluate(async (cc) => {
     try {
       const r = await fetch('/portal-migration/hz/glow/address-change?actionSource=glow', {
@@ -42,7 +152,6 @@ async function setDeliveryCountry(page, origin, countryCode, primeUrl) {
       `Failed to set delivery country to ${countryCode} at ${origin} (status=${result.status})`,
     );
   }
-  // (Ship-to label is verified on the search page diag log in scrapeAllPages.)
 }
 
 async function dumpArtifacts(page, label) {
@@ -65,10 +174,7 @@ async function extractItems(page, origin) {
       els
         .map((el) => {
           const asin = el.getAttribute('data-asin');
-          // Prefer the anchor's clean sources first (aria-label / link text),
-          // then fall back to combined h2/title-recipe text. The h2 text on
-          // amazon.co.uk often concats the brand span + title span with no
-          // whitespace ("PokémonTCG: …"), so we only use it as a last resort.
+
           const clean = (t) => (t || '').replace(/\s+/g, ' ').trim();
           const ariaLabel = clean(el.querySelector('h2 a')?.getAttribute('aria-label'));
           const linkText = clean(el.querySelector('h2 a')?.textContent);
@@ -84,7 +190,16 @@ async function extractItems(page, origin) {
             ariaLabel ||
             linkText ||
             '';
+
           const priceEl = el.querySelector('.a-price .a-offscreen');
+          const priceRaw = priceEl?.textContent?.trim() || null;
+
+          const imgEl = el.querySelector('img.s-image, img[data-image-latency]');
+          const image =
+            imgEl?.getAttribute('src') ||
+            imgEl?.getAttribute('data-src') ||
+            null;
+
           const linkEl = el.querySelector(
             'a.a-link-normal.s-line-clamp-2, h2 a, a.a-link-normal[href*="/dp/"]',
           );
@@ -95,12 +210,8 @@ async function extractItems(page, origin) {
               link = new URL(href, origin).href;
             } catch {}
           }
-          return {
-            asin,
-            title,
-            price: priceEl?.textContent?.trim() || null,
-            link,
-          };
+
+          return { asin, title, price: priceRaw, image, link };
         })
         .filter((i) => i.asin),
     origin,
@@ -133,21 +244,14 @@ async function scrapeAllPages(page, url) {
 
     await page
       .waitForSelector('[data-component-type="s-search-result"]', { timeout: 30000 })
-      .catch(() => {
-        /* zero-result page — fine, we'll just return what we have */
-      });
+      .catch(() => {});
 
-    // Diagnostic: what ship-to does the SEARCH page itself show, and what's the result header?
     const diag = await page.evaluate(() => {
-      const glow = document.querySelector(
-        '#glow-ingress-line2, #nav-global-location-slot #glow-ingress-line2',
-      );
-      const header = document.querySelector(
-        '.s-breadcrumb, [data-component-type="s-result-info-bar"], .sg-col-14-of-20 h2',
-      );
+      const glow = document.querySelector('#glow-ingress-line2');
+      const header = document.querySelector('.s-breadcrumb, [data-component-type="s-result-info-bar"]');
       return {
         shipTo: glow ? glow.innerText.trim() : null,
-        header: header ? header.innerText.trim().slice(0, 200) : null,
+        header: header ? header.innerText.trim().slice(0, 120) : null,
       };
     });
     console.log(`  page ${p} diag: shipTo=${JSON.stringify(diag.shipTo)} header=${JSON.stringify(diag.header)}`);
@@ -166,9 +270,7 @@ async function scrapeAllPages(page, url) {
     if (added === 0 && p > 1) break;
 
     const nextHref = await page.evaluate(() => {
-      const next = document.querySelector(
-        'a.s-pagination-next:not(.s-pagination-disabled)',
-      );
+      const next = document.querySelector('a.s-pagination-next:not(.s-pagination-disabled)');
       return next ? next.getAttribute('href') : null;
     });
     if (!nextHref) break;
@@ -178,96 +280,137 @@ async function scrapeAllPages(page, url) {
   return all;
 }
 
-function diffItems(oldItems, newItems) {
+// ─── Diff ───────────────────────────────────────────────────────────────────
+
+function diffInteresting(oldItems, newItems, defaultCurrency) {
   const oldMap = new Map(oldItems.map((i) => [i.asin, i]));
-  const newMap = new Map(newItems.map((i) => [i.asin, i]));
-
   const added = newItems.filter((i) => !oldMap.has(i.asin));
-  const removed = oldItems.filter((i) => !newMap.has(i.asin));
-  const priceChanged = newItems
-    .filter((i) => {
-      const o = oldMap.get(i.asin);
-      return o && o.price !== i.price;
-    })
-    .map((i) => ({ ...i, oldPrice: oldMap.get(i.asin).price }));
 
-  return { added, removed, priceChanged };
-}
-
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function truncate(s, n) {
-  const clean = (s || '').replace(/\s+/g, ' ').trim();
-  return clean.length > n ? clean.slice(0, n - 1) + '…' : clean;
-}
-
-async function sendTelegram(text) {
-  if (!TG_TOKEN || !TG_CHAT) {
-    console.log('[tg] No Telegram config, skipping notification');
-    return;
+  const dropped = [];
+  for (const i of newItems) {
+    const o = oldMap.get(i.asin);
+    if (!o) continue;
+    // Prefer stored priceValue, else re-parse.
+    const oldV =
+      typeof o.priceValue === 'number'
+        ? o.priceValue
+        : parsePrice(o.price, defaultCurrency)?.value ?? null;
+    const newV = typeof i.priceValue === 'number' ? i.priceValue : null;
+    if (oldV == null || newV == null) continue;
+    if (newV < oldV) dropped.push({ ...i, oldPrice: o.price, oldPriceValue: oldV });
   }
-  const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+  return { added, dropped };
+}
+
+// ─── Telegram ───────────────────────────────────────────────────────────────
+
+async function tgApi(method, payload) {
+  if (!TG_TOKEN || !TG_CHAT) {
+    console.log(`[tg] ${method}: no TG_TOKEN/TG_CHAT, skipping`);
+    return null;
+  }
+  const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: TG_CHAT,
-      text,
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    }),
+    body: JSON.stringify({ chat_id: TG_CHAT, ...payload }),
   });
   if (!res.ok) {
-    console.error('[tg] error:', res.status, await res.text());
+    console.error(`[tg] ${method} error:`, res.status, await res.text());
+    return null;
+  }
+  return res.json();
+}
+
+function formatItemLine(kind, item, rates) {
+  // kind: 'new' | 'drop'
+  const emoji = kind === 'new' ? '✅' : '🔻';
+  const titleHtml = `<a href="${escapeHtml(item.link)}">${escapeHtml(truncate(item.title, 55))}</a>`;
+  if (kind === 'new') {
+    const native = fmtNative(item.priceValue, item.currency);
+    const hkd = toHkd(item.priceValue, item.currency, rates);
+    const priceTxt = item.priceValue != null
+      ? `${escapeHtml(native)}${hkd ? ` <i>(≈HK$${hkd})</i>` : ''}`
+      : '<i>price N/A</i>';
+    return `${emoji} ${titleHtml} — ${priceTxt}`;
+  }
+  // drop
+  const oldN = fmtNative(item.oldPriceValue, item.currency);
+  const newN = fmtNative(item.priceValue, item.currency);
+  const oldH = toHkd(item.oldPriceValue, item.currency, rates);
+  const newH = toHkd(item.priceValue, item.currency, rates);
+  const hkdPart =
+    oldH && newH ? ` <i>(≈HK$${oldH} → HK$${newH})</i>` : '';
+  return `${emoji} ${titleHtml} — <s>${escapeHtml(oldN)}</s> → ${escapeHtml(newN)}${hkdPart}`;
+}
+
+function buildCombinedCaption({ perCountry, rates }) {
+  const lines = [`⏱ <b>${hkTimestamp()} HKT</b>`];
+  const status = [];
+  for (const code of ['US', 'UK', 'CA']) {
+    const pc = perCountry[code];
+    if (!pc) continue;
+    if (pc.count != null) status.push(`${pc.flag} ${pc.count}`);
+    else status.push(`${pc.flag} ⚠️`);
+  }
+  if (status.length) lines.push(status.join(' · '));
+
+  let any = false;
+  for (const code of ['US', 'UK', 'CA']) {
+    const pc = perCountry[code];
+    if (!pc || (!pc.added?.length && !pc.dropped?.length)) continue;
+    any = true;
+    lines.push('');
+    lines.push(`${pc.flag} <b>${code}</b>`);
+    for (const item of pc.added) lines.push(formatItemLine('new', item, rates));
+    for (const item of pc.dropped) lines.push(formatItemLine('drop', item, rates));
+  }
+  if (!any) {
+    lines.push('');
+    lines.push('<i>No new items or price drops.</i>');
+  }
+
+  let text = lines.join('\n');
+  if (text.length > CAPTION_MAX) {
+    text = text.slice(0, CAPTION_MAX - 2) + '…';
+  }
+  return text;
+}
+
+async function sendCombined({ perCountry, rates }) {
+  // Collect interesting items in country order for the media group.
+  const media = [];
+  for (const code of ['US', 'UK', 'CA']) {
+    const pc = perCountry[code];
+    if (!pc) continue;
+    for (const i of pc.added) media.push(i);
+    for (const i of pc.dropped) media.push(i);
+  }
+  const withImage = media.filter((i) => i.image).slice(0, MAX_MEDIA);
+  const caption = buildCombinedCaption({ perCountry, rates });
+
+  if (withImage.length >= 2) {
+    const items = withImage.map((it, idx) => ({
+      type: 'photo',
+      media: it.image,
+      ...(idx === 0 ? { caption, parse_mode: 'HTML' } : {}),
+    }));
+    await tgApi('sendMediaGroup', { media: items });
+  } else if (withImage.length === 1) {
+    await tgApi('sendPhoto', {
+      photo: withImage[0].image,
+      caption,
+      parse_mode: 'HTML',
+    });
   } else {
-    console.log('[tg] sent');
+    await tgApi('sendMessage', {
+      text: caption,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    });
   }
 }
 
-function formatMessage(name, url, { added, removed, priceChanged }) {
-  const lines = [`<b>${escapeHtml(name)}</b>`];
-
-  if (added.length) {
-    lines.push(`\n✅ <b>New (${added.length}):</b>`);
-    for (const i of added.slice(0, MAX_ITEMS_IN_MESSAGE)) {
-      const priceTxt = i.price ? ` — ${escapeHtml(i.price)}` : '';
-      lines.push(
-        `• <a href="${escapeHtml(i.link)}">${escapeHtml(truncate(i.title, 80))}</a>${priceTxt}`,
-      );
-    }
-    if (added.length > MAX_ITEMS_IN_MESSAGE)
-      lines.push(`…+${added.length - MAX_ITEMS_IN_MESSAGE} more`);
-  }
-
-  if (removed.length) {
-    lines.push(`\n❌ <b>Gone (${removed.length}):</b>`);
-    for (const i of removed.slice(0, MAX_ITEMS_IN_MESSAGE)) {
-      lines.push(`• ${escapeHtml(truncate(i.title, 80))}`);
-    }
-    if (removed.length > MAX_ITEMS_IN_MESSAGE)
-      lines.push(`…+${removed.length - MAX_ITEMS_IN_MESSAGE} more`);
-  }
-
-  if (priceChanged.length) {
-    lines.push(`\n💰 <b>Price changed (${priceChanged.length}):</b>`);
-    for (const i of priceChanged.slice(0, MAX_ITEMS_IN_MESSAGE)) {
-      lines.push(
-        `• <a href="${escapeHtml(i.link)}">${escapeHtml(truncate(i.title, 70))}</a>: ${escapeHtml(
-          i.oldPrice || 'N/A',
-        )} → ${escapeHtml(i.price || 'N/A')}`,
-      );
-    }
-    if (priceChanged.length > MAX_ITEMS_IN_MESSAGE)
-      lines.push(`…+${priceChanged.length - MAX_ITEMS_IN_MESSAGE} more`);
-  }
-
-  lines.push(`\n<a href="${escapeHtml(url)}">Open search page</a>`);
-  return lines.join('\n');
-}
+// ─── Main ───────────────────────────────────────────────────────────────────
 
 async function readSnapshot(file) {
   try {
@@ -277,24 +420,13 @@ async function readSnapshot(file) {
   }
 }
 
-function hkTimestamp() {
-  return new Date().toLocaleString('en-GB', {
-    timeZone: 'Asia/Hong_Kong',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-}
-
 async function main() {
   const targets = JSON.parse(await fs.readFile('urls.json', 'utf8'));
   await fs.mkdir(SNAPSHOT_DIR, { recursive: true });
-  const summary = [];
 
-  // Group targets by origin — one shared context per origin so we only set delivery once.
+  const rates = await fetchHkdRates();
+
+  // Group targets by origin.
   const byOrigin = new Map();
   for (const t of targets) {
     const origin = new URL(t.url).origin;
@@ -310,17 +442,16 @@ async function main() {
     ],
   });
 
-  // Per-origin locale so each Amazon domain gets the expected Accept-Language.
-  const localeByHost = {
-    'www.amazon.com': 'en-US',
-    'www.amazon.ca': 'en-CA',
-    'www.amazon.co.uk': 'en-GB',
-  };
+  // Aggregate per-country results for the final combined Telegram message.
+  const perCountry = {}; // { US: { flag, count, added, dropped }, ... }
 
   let hadError = false;
 
   for (const [origin, group] of byOrigin) {
     const host = new URL(origin).host;
+    const defaultCurrency = currencyByHost[host] || 'USD';
+    const country = countryByHost[host] || { code: host, flag: '🌐' };
+
     const context = await browser.newContext({
       userAgent:
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -330,27 +461,31 @@ async function main() {
         'Accept-Language': `${localeByHost[host] || 'en-US'},en;q=0.9`,
       },
     });
-    // Strip the `navigator.webdriver` giveaway before any page script runs.
     await context.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
     const page = await context.newPage();
 
-    // If any target in this group specifies deliverTo, set it now (uses the first non-empty).
     const deliverTo = group.find((t) => t.deliverTo)?.deliverTo;
     if (deliverTo) {
       try {
         console.log(`\n[${origin}] setting delivery to ${deliverTo}`);
-        // Prime on the first target URL so we avoid the homepage→merchant-URL
-        // navigation pattern that triggers Amazon's 503 soft-block.
         await setDeliveryCountry(page, origin, deliverTo, group[0].url);
         console.log(`[${origin}] delivery set to ${deliverTo}`);
       } catch (err) {
         console.error(`[${origin}] failed to set delivery: ${err.message}`);
-        await dumpArtifacts(page, `setDelivery-${new URL(origin).host}`);
+        await dumpArtifacts(page, `setDelivery-${host}`);
         hadError = true;
       }
     }
+
+    // Initialize per-country bucket.
+    perCountry[country.code] = {
+      flag: country.flag,
+      count: null,
+      added: [],
+      dropped: [],
+    };
 
     let first = true;
     for (const t of group) {
@@ -359,45 +494,40 @@ async function main() {
       console.log(`\n=== ${t.name} (${t.slug}) ===`);
       try {
         const items = await scrapeAllPages(page, t.url);
+        // Enrich: parse priceValue + currency.
+        for (const item of items) {
+          const parsed = parsePrice(item.price, defaultCurrency);
+          item.priceValue = parsed?.value ?? null;
+          item.currency = parsed?.currency ?? defaultCurrency;
+        }
         console.log(`found ${items.length} items`);
 
         const snapPath = path.join(SNAPSHOT_DIR, `${t.slug}.json`);
         const prev = await readSnapshot(snapPath);
 
-        // Guard against soft-block false positives: if the previous snapshot
-        // had items but this run found none (and we weren't explicitly blocked),
-        // treat it as a scrape failure. Don't send a misleading "everything gone"
-        // notification and don't overwrite the good snapshot.
+        // Guard: suspiciously empty result when prev had items = treat as soft-block.
         if (prev && prev.length > 0 && items.length === 0) {
-          console.log(
-            `suspicious 0-item result (prev had ${prev.length}) — skipping diff + snapshot update`,
-          );
+          console.log(`suspicious 0-item result (prev had ${prev.length}) — keep snapshot`);
           hadError = true;
-          summary.push({ slug: t.slug, count: null, note: `skipped (soft-block, prev=${prev.length})` });
           continue;
         }
 
+        perCountry[country.code].count =
+          (perCountry[country.code].count ?? 0) + items.length;
+
         if (prev) {
-          const d = diffItems(prev, items);
-          const total = d.added.length + d.removed.length + d.priceChanged.length;
-          if (total > 0) {
-            console.log(
-              `changes: +${d.added.length} -${d.removed.length} Δ${d.priceChanged.length}`,
-            );
-            await sendTelegram(formatMessage(t.name, t.url, d));
-          } else {
-            console.log('no changes');
-          }
+          const d = diffInteresting(prev, items, defaultCurrency);
+          console.log(`changes: +${d.added.length} 🔻${d.dropped.length}`);
+          perCountry[country.code].added.push(...d.added);
+          perCountry[country.code].dropped.push(...d.dropped);
         } else {
           console.log('first run — saving snapshot, no notification');
         }
 
         await fs.writeFile(snapPath, JSON.stringify(items, null, 2));
-        summary.push({ slug: t.slug, count: items.length });
       } catch (err) {
         hadError = true;
         console.error(`[${t.slug}] error:`, err.message);
-        summary.push({ slug: t.slug, count: null, note: `error: ${err.message.slice(0, 60)}` });
       }
     }
 
@@ -406,17 +536,8 @@ async function main() {
 
   await browser.close();
 
-  // Heartbeat: one compact message so the user always knows when the last run
-  // happened, even if nothing changed across all three sources.
-  const lines = [`⏱ <b>Check done</b> — ${hkTimestamp()} HKT`];
-  for (const s of summary) {
-    if (s.count === null) {
-      lines.push(`• ${escapeHtml(s.slug)}: ⚠️ ${escapeHtml(s.note || 'unknown')}`);
-    } else {
-      lines.push(`• ${escapeHtml(s.slug)}: ${s.count} items`);
-    }
-  }
-  await sendTelegram(lines.join('\n'));
+  console.log('\n--- Sending combined Telegram message ---');
+  await sendCombined({ perCountry, rates });
 
   if (hadError) process.exitCode = 1;
 }
