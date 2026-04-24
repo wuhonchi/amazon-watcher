@@ -353,6 +353,18 @@ async function main() {
         const snapPath = path.join(SNAPSHOT_DIR, `${t.slug}.json`);
         const prev = await readSnapshot(snapPath);
 
+        // Guard against soft-block false positives: if the previous snapshot
+        // had items but this run found none (and we weren't explicitly blocked),
+        // treat it as a scrape failure. Don't send a misleading "everything gone"
+        // notification and don't overwrite the good snapshot.
+        if (prev && prev.length > 0 && items.length === 0) {
+          console.log(
+            `suspicious 0-item result (prev had ${prev.length}) — skipping diff + snapshot update`,
+          );
+          hadError = true;
+          continue;
+        }
+
         if (prev) {
           const d = diffItems(prev, items);
           const total = d.added.length + d.removed.length + d.priceChanged.length;
