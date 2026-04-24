@@ -6,7 +6,8 @@
   },
   {
     "slug": "us-pokemon-amazon-export",
-    "name": "Pokemon TCG — Amazon US (Amazon Export Sales)",
-    "url": "https://www.amazon.com/s?k=pokemon+tcg&i=merchant-items&me=A2XZ7JICGUQ1CX&rh=p_123%3A325733&s=price-desc-rank&dc&ds=v1%3A%2FCVFcIJ9%2BXaB3T7Y73BG6ZWVfkrPIx3zlTOLcnTm19E&qid=1775750594&refresh=1&rnid=85457740011&ref=sr_nr_p_123_1"
+    "name": "Pokemon TCG — Amazon US (Amazon Export Sales, ship to HK)",
+    "url": "https://www.amazon.com/s?k=pokemon+tcg&i=merchant-items&me=A2XZ7JICGUQ1CX&rh=p_123%3A325733&s=price-desc-rank&dc&ds=v1%3A%2FCVFcIJ9%2BXaB3T7Y73BG6ZWVfkrPIx3zlTOLcnTm19E&qid=1775750594&refresh=1&rnid=85457740011&ref=sr_nr_p_123_1",
+    "deliverTo": "HK"
   }
 ]

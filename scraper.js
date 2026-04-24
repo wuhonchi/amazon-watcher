@@ -6,22 +6,26 @@ const SNAPSHOT_DIR = 'snapshots';
 const TG_TOKEN = process.env.TELEGRAM_TOKEN;
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID;
 const MAX_ITEMS_IN_MESSAGE = 10;
+const MAX_PAGES = 5;
 
-async function scrapeSearch(page, url) {
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+async function setDeliveryCountry(page, origin, countryCode) {
+  await page.goto(origin + '/', { waitUntil: 'load', timeout: 60000 });
+  await page.waitForSelector('#nav-global-location-popover-link', { timeout: 30000 });
+  const ok = await page.evaluate(async (cc) => {
+    const r = await fetch('/portal-migration/hz/glow/address-change?actionSource=glow', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: `locationType=COUNTRY&district=&countryCode=${cc}&storeContext=generic&pageType=Gateway&actionSource=glow`,
+    });
+    if (!r.ok) return false;
+    const j = await r.json().catch(() => null);
+    return !!(j && j.isAddressUpdated);
+  }, countryCode);
+  if (!ok) throw new Error(`Failed to set delivery country to ${countryCode} at ${origin}`);
+}
 
-  // If Amazon throws CAPTCHA / dog page, bail out.
-  const title = await page.title();
-  if (/robot|captcha|sorry/i.test(title)) {
-    throw new Error(`Blocked by Amazon (title: ${title})`);
-  }
-
-  await page.waitForSelector('[data-component-type="s-search-result"]', {
-    timeout: 30000,
-  });
-
-  const origin = new URL(url).origin;
-  const items = await page.$$eval(
+async function extractItems(page, origin) {
+  return page.$$eval(
     '[data-component-type="s-search-result"]',
     (els, origin) =>
       els
@@ -29,15 +33,15 @@ async function scrapeSearch(page, url) {
           const asin = el.getAttribute('data-asin');
           const titleEl = el.querySelector('h2 a span, h2 span, [data-cy="title-recipe"] span');
           const priceEl = el.querySelector('.a-price .a-offscreen');
-          const linkEl = el.querySelector('a.a-link-normal.s-line-clamp-2, h2 a, a.a-link-normal[href*="/dp/"]');
+          const linkEl = el.querySelector(
+            'a.a-link-normal.s-line-clamp-2, h2 a, a.a-link-normal[href*="/dp/"]',
+          );
           let link = '';
           const href = linkEl?.getAttribute('href');
           if (href) {
             try {
               link = new URL(href, origin).href;
-            } catch {
-              link = '';
-            }
+            } catch {}
           }
           return {
             asin,
@@ -49,8 +53,61 @@ async function scrapeSearch(page, url) {
         .filter((i) => i.asin),
     origin,
   );
+}
 
-  return items;
+async function scrapeAllPages(page, url) {
+  const origin = new URL(url).origin;
+  const seen = new Set();
+  const all = [];
+  let currentUrl = url;
+
+  for (let p = 1; p <= MAX_PAGES; p++) {
+    let title = '';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await page.goto(currentUrl, { waitUntil: 'load', timeout: 60000 });
+      await page
+        .evaluate(() => document.getElementById('redir-modal')?.remove())
+        .catch(() => {});
+      title = await page.title();
+      if (!/robot|captcha|sorry/i.test(title)) break;
+      const wait = 2000 * attempt;
+      console.log(`  page ${p} attempt ${attempt} blocked (${title}); retrying in ${wait}ms`);
+      await page.waitForTimeout(wait);
+    }
+    if (/robot|captcha|sorry/i.test(title)) {
+      throw new Error(`Blocked by Amazon after 3 attempts (title: ${title})`);
+    }
+
+    await page
+      .waitForSelector('[data-component-type="s-search-result"]', { timeout: 30000 })
+      .catch(() => {
+        /* zero-result page — fine, we'll just return what we have */
+      });
+
+    const items = await extractItems(page, origin);
+    let added = 0;
+    for (const i of items) {
+      if (!seen.has(i.asin)) {
+        seen.add(i.asin);
+        all.push(i);
+        added++;
+      }
+    }
+    console.log(`  page ${p}: +${added} (total ${all.length})`);
+
+    if (added === 0 && p > 1) break;
+
+    const nextHref = await page.evaluate(() => {
+      const next = document.querySelector(
+        'a.s-pagination-next:not(.s-pagination-disabled)',
+      );
+      return next ? next.getAttribute('href') : null;
+    });
+    if (!nextHref) break;
+    currentUrl = new URL(nextHref, origin).href;
+  }
+
+  return all;
 }
 
 function diffItems(oldItems, newItems) {
@@ -110,9 +167,12 @@ function formatMessage(name, url, { added, removed, priceChanged }) {
     lines.push(`\n✅ <b>New (${added.length}):</b>`);
     for (const i of added.slice(0, MAX_ITEMS_IN_MESSAGE)) {
       const priceTxt = i.price ? ` — ${escapeHtml(i.price)}` : '';
-      lines.push(`• <a href="${escapeHtml(i.link)}">${escapeHtml(truncate(i.title, 80))}</a>${priceTxt}`);
+      lines.push(
+        `• <a href="${escapeHtml(i.link)}">${escapeHtml(truncate(i.title, 80))}</a>${priceTxt}`,
+      );
     }
-    if (added.length > MAX_ITEMS_IN_MESSAGE) lines.push(`…+${added.length - MAX_ITEMS_IN_MESSAGE} more`);
+    if (added.length > MAX_ITEMS_IN_MESSAGE)
+      lines.push(`…+${added.length - MAX_ITEMS_IN_MESSAGE} more`);
   }
 
   if (removed.length) {
@@ -120,17 +180,21 @@ function formatMessage(name, url, { added, removed, priceChanged }) {
     for (const i of removed.slice(0, MAX_ITEMS_IN_MESSAGE)) {
       lines.push(`• ${escapeHtml(truncate(i.title, 80))}`);
     }
-    if (removed.length > MAX_ITEMS_IN_MESSAGE) lines.push(`…+${removed.length - MAX_ITEMS_IN_MESSAGE} more`);
+    if (removed.length > MAX_ITEMS_IN_MESSAGE)
+      lines.push(`…+${removed.length - MAX_ITEMS_IN_MESSAGE} more`);
   }
 
   if (priceChanged.length) {
     lines.push(`\n💰 <b>Price changed (${priceChanged.length}):</b>`);
     for (const i of priceChanged.slice(0, MAX_ITEMS_IN_MESSAGE)) {
       lines.push(
-        `• <a href="${escapeHtml(i.link)}">${escapeHtml(truncate(i.title, 70))}</a>: ${escapeHtml(i.oldPrice || 'N/A')} → ${escapeHtml(i.price || 'N/A')}`,
+        `• <a href="${escapeHtml(i.link)}">${escapeHtml(truncate(i.title, 70))}</a>: ${escapeHtml(
+          i.oldPrice || 'N/A',
+        )} → ${escapeHtml(i.price || 'N/A')}`,
       );
     }
-    if (priceChanged.length > MAX_ITEMS_IN_MESSAGE) lines.push(`…+${priceChanged.length - MAX_ITEMS_IN_MESSAGE} more`);
+    if (priceChanged.length > MAX_ITEMS_IN_MESSAGE)
+      lines.push(`…+${priceChanged.length - MAX_ITEMS_IN_MESSAGE} more`);
   }
 
   lines.push(`\n<a href="${escapeHtml(url)}">Open search page</a>`);
@@ -149,48 +213,77 @@ async function main() {
   const targets = JSON.parse(await fs.readFile('urls.json', 'utf8'));
   await fs.mkdir(SNAPSHOT_DIR, { recursive: true });
 
+  // Group targets by origin — one shared context per origin so we only set delivery once.
+  const byOrigin = new Map();
+  for (const t of targets) {
+    const origin = new URL(t.url).origin;
+    if (!byOrigin.has(origin)) byOrigin.set(origin, []);
+    byOrigin.get(origin).push(t);
+  }
+
   const browser = await chromium.launch({
     args: ['--disable-blink-features=AutomationControlled'],
-  });
-  const context = await browser.newContext({
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 900 },
-    locale: 'en-US',
   });
 
   let hadError = false;
 
-  for (const t of targets) {
-    console.log(`\n=== ${t.name} (${t.slug}) ===`);
+  for (const [origin, group] of byOrigin) {
+    const context = await browser.newContext({
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 900 },
+      locale: 'en-US',
+    });
     const page = await context.newPage();
-    try {
-      const items = await scrapeSearch(page, t.url);
-      console.log(`found ${items.length} items`);
 
-      const snapPath = path.join(SNAPSHOT_DIR, `${t.slug}.json`);
-      const prev = await readSnapshot(snapPath);
-
-      if (prev) {
-        const d = diffItems(prev, items);
-        const total = d.added.length + d.removed.length + d.priceChanged.length;
-        if (total > 0) {
-          console.log(`changes: +${d.added.length} -${d.removed.length} Δ${d.priceChanged.length}`);
-          await sendTelegram(formatMessage(t.name, t.url, d));
-        } else {
-          console.log('no changes');
-        }
-      } else {
-        console.log('first run — saving snapshot, no notification');
+    // If any target in this group specifies deliverTo, set it now (uses the first non-empty).
+    const deliverTo = group.find((t) => t.deliverTo)?.deliverTo;
+    if (deliverTo) {
+      try {
+        console.log(`\n[${origin}] setting delivery to ${deliverTo}`);
+        await setDeliveryCountry(page, origin, deliverTo);
+        console.log(`[${origin}] delivery set to ${deliverTo}`);
+      } catch (err) {
+        console.error(`[${origin}] failed to set delivery: ${err.message}`);
+        hadError = true;
       }
-
-      await fs.writeFile(snapPath, JSON.stringify(items, null, 2));
-    } catch (err) {
-      hadError = true;
-      console.error(`[${t.slug}] error:`, err.message);
-    } finally {
-      await page.close();
     }
+
+    let first = true;
+    for (const t of group) {
+      if (!first) await page.waitForTimeout(2000 + Math.random() * 2000);
+      first = false;
+      console.log(`\n=== ${t.name} (${t.slug}) ===`);
+      try {
+        const items = await scrapeAllPages(page, t.url);
+        console.log(`found ${items.length} items`);
+
+        const snapPath = path.join(SNAPSHOT_DIR, `${t.slug}.json`);
+        const prev = await readSnapshot(snapPath);
+
+        if (prev) {
+          const d = diffItems(prev, items);
+          const total = d.added.length + d.removed.length + d.priceChanged.length;
+          if (total > 0) {
+            console.log(
+              `changes: +${d.added.length} -${d.removed.length} Δ${d.priceChanged.length}`,
+            );
+            await sendTelegram(formatMessage(t.name, t.url, d));
+          } else {
+            console.log('no changes');
+          }
+        } else {
+          console.log('first run — saving snapshot, no notification');
+        }
+
+        await fs.writeFile(snapPath, JSON.stringify(items, null, 2));
+      } catch (err) {
+        hadError = true;
+        console.error(`[${t.slug}] error:`, err.message);
+      }
+    }
+
+    await context.close();
   }
 
   await browser.close();
