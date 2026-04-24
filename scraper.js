@@ -423,40 +423,15 @@ function buildCombinedCaption({ perCountry, rates }) {
 }
 
 async function sendCombined({ perCountry, rates }) {
-  // Collect interesting items in country order for the media group.
-  const media = [];
-  for (const code of ['US', 'UK', 'CA']) {
-    const pc = perCountry[code];
-    if (!pc) continue;
-    for (const i of pc.added) media.push(i);
-    for (const i of pc.dropped) media.push(i);
-  }
-  const withImage = media
-    .filter((i) => i.image)
-    .slice(0, MAX_MEDIA)
-    .map((i) => ({ ...i, image: resizeAmazonImage(i.image, 200) }));
-  const caption = buildCombinedCaption({ perCountry, rates });
-
-  if (withImage.length >= 2) {
-    const items = withImage.map((it, idx) => ({
-      type: 'photo',
-      media: it.image,
-      ...(idx === 0 ? { caption, parse_mode: 'HTML' } : {}),
-    }));
-    await tgApi('sendMediaGroup', { media: items });
-  } else if (withImage.length === 1) {
-    await tgApi('sendPhoto', {
-      photo: withImage[0].image,
-      caption,
-      parse_mode: 'HTML',
-    });
-  } else {
-    await tgApi('sendMessage', {
-      text: caption,
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    });
-  }
+  // Always send a single text message with a compact link preview for the
+  // first interesting item (gives a ~60px thumbnail in a card at the bottom
+  // without occupying the whole message height like sendPhoto would).
+  const text = buildCombinedCaption({ perCountry, rates });
+  await tgApi('sendMessage', {
+    text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: false,
+  });
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
