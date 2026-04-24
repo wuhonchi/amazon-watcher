@@ -242,7 +242,11 @@ async function scrapeAllPages(page, url) {
   for (let p = 1; p <= MAX_PAGES; p++) {
     let title = '';
     let status = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // Amazon's soft-block window for a rate-limited IP is often ~minute-scale,
+    // so short 2/4/6s retries rarely escape it. Longer backoff gives us a
+    // real chance without ballooning total runtime past ~2 minutes per URL.
+    const backoffMs = [10_000, 30_000, 60_000];
+    for (let attempt = 1; attempt <= backoffMs.length + 1; attempt++) {
       const resp = await page.goto(currentUrl, { waitUntil: 'load', timeout: 90000 });
       status = resp?.status() ?? null;
       await page
@@ -250,7 +254,8 @@ async function scrapeAllPages(page, url) {
         .catch(() => {});
       title = await page.title();
       if (!isBlocked(status, title)) break;
-      const wait = 2000 * attempt;
+      if (attempt > backoffMs.length) break; // exhausted retries
+      const wait = backoffMs[attempt - 1];
       console.log(
         `  page ${p} attempt ${attempt} blocked (status=${status}, title="${title}"); retrying in ${wait}ms`,
       );
