@@ -257,6 +257,15 @@ async function scrapeAllPages(page, url) {
     console.log(`  page ${p} diag: shipTo=${JSON.stringify(diag.shipTo)} header=${JSON.stringify(diag.header)}`);
 
     const items = await extractItems(page, origin);
+
+    // Silent-block detection: page rendered without expected chrome (no glow
+    // banner, no result header) AND no items. Dump artifacts so we can see
+    // what Amazon actually served. (Title didn't match /sorry|robot/, so the
+    // regular retry path above didn't catch it.)
+    if (items.length === 0 && diag.shipTo == null && diag.header == null) {
+      console.log(`  page ${p}: silent block suspected (no chrome, no items) — dumping artifact`);
+      await dumpArtifacts(page, `silent-${new URL(currentUrl).host}-p${p}`);
+    }
     let added = 0;
     for (const i of items) {
       if (!seen.has(i.asin)) {
