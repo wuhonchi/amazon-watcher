@@ -38,6 +38,15 @@ async function setDeliveryCountry(page, origin, countryCode) {
       `Failed to set delivery country to ${countryCode} at ${origin} (status=${result.status})`,
     );
   }
+  // Verify: reload home page and read the ship-to label. If it doesn't reflect
+  // the new country, the server silently ignored the change (common on amazon.co.uk
+  // for guest sessions when switching to a country requiring sign-in).
+  await page.goto(origin + '/', { waitUntil: 'load', timeout: 90000 });
+  const actualShipTo = await page
+    .locator('#glow-ingress-line2')
+    .innerText()
+    .catch(() => '');
+  console.log(`  verified ship-to label: "${actualShipTo.trim() || '(not found)'}"`);
 }
 
 async function dumpArtifacts(page, label) {
