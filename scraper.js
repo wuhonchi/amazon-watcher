@@ -69,20 +69,25 @@ async function extractItems(page, origin) {
       els
         .map((el) => {
           const asin = el.getAttribute('data-asin');
-          // Collect title candidates from several places and pick the longest —
-          // regions vary: amazon.co.uk often puts the brand in an h2 <span> before
-          // the real title anchor, so grabbing just the first span gives "Pokémon".
-          const candidates = [
-            el.querySelector('h2 a')?.getAttribute('aria-label'),
-            el.querySelector('h2 a')?.textContent,
-            el.querySelector('[data-cy="title-recipe"] a')?.textContent,
-            el.querySelector('[data-cy="title-recipe"]')?.textContent,
-            el.querySelector('h2')?.textContent,
-          ];
-          const title = candidates
-            .filter(Boolean)
-            .map((t) => t.replace(/\s+/g, ' ').trim())
-            .reduce((best, cur) => (cur.length > best.length ? cur : best), '');
+          // Prefer the anchor's clean sources first (aria-label / link text),
+          // then fall back to combined h2/title-recipe text. The h2 text on
+          // amazon.co.uk often concats the brand span + title span with no
+          // whitespace ("PokémonTCG: …"), so we only use it as a last resort.
+          const clean = (t) => (t || '').replace(/\s+/g, ' ').trim();
+          const ariaLabel = clean(el.querySelector('h2 a')?.getAttribute('aria-label'));
+          const linkText = clean(el.querySelector('h2 a')?.textContent);
+          const recipeLink = clean(el.querySelector('[data-cy="title-recipe"] a')?.textContent);
+          const recipeText = clean(el.querySelector('[data-cy="title-recipe"]')?.textContent);
+          const h2Text = clean(el.querySelector('h2')?.textContent);
+          const title =
+            (ariaLabel.length >= 15 && ariaLabel) ||
+            (linkText.length >= 15 && linkText) ||
+            (recipeLink.length >= 15 && recipeLink) ||
+            (recipeText.length >= 15 && recipeText) ||
+            h2Text ||
+            ariaLabel ||
+            linkText ||
+            '';
           const priceEl = el.querySelector('.a-price .a-offscreen');
           const linkEl = el.querySelector(
             'a.a-link-normal.s-line-clamp-2, h2 a, a.a-link-normal[href*="/dp/"]',
