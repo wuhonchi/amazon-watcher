@@ -113,6 +113,17 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;');
 }
 
+// Resize Amazon CDN image URL to a small thumbnail (reduces file size so
+// Telegram renders more compactly in media groups).
+function resizeAmazonImage(url, px = 200) {
+  if (!url || !/media-amazon\.com\/images/.test(url)) return url;
+  // Strip any existing transforms like `._AC_UY436_FMjpg_.` between the
+  // basename and the extension.
+  const stripped = url.replace(/\._[A-Z0-9_,-]+_\./, '.');
+  // Insert a compact transform right before the extension.
+  return stripped.replace(/\.(jpg|jpeg|png|webp)(\?.*)?$/i, `._AC_UL${px}_.$1$2`);
+}
+
 function truncate(s, n) {
   const clean = (s || '').replace(/\s+/g, ' ').trim();
   return clean.length > n ? clean.slice(0, n - 1) + '…' : clean;
@@ -405,7 +416,10 @@ async function sendCombined({ perCountry, rates }) {
     for (const i of pc.added) media.push(i);
     for (const i of pc.dropped) media.push(i);
   }
-  const withImage = media.filter((i) => i.image).slice(0, MAX_MEDIA);
+  const withImage = media
+    .filter((i) => i.image)
+    .slice(0, MAX_MEDIA)
+    .map((i) => ({ ...i, image: resizeAmazonImage(i.image, 200) }));
   const caption = buildCombinedCaption({ perCountry, rates });
 
   if (withImage.length >= 2) {
