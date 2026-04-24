@@ -8,8 +8,12 @@ const TG_CHAT = process.env.TELEGRAM_CHAT_ID;
 const MAX_ITEMS_IN_MESSAGE = 10;
 const MAX_PAGES = 1;
 
-async function setDeliveryCountry(page, origin, countryCode) {
-  await page.goto(origin + '/', { waitUntil: 'load', timeout: 90000 });
+async function setDeliveryCountry(page, origin, countryCode, primeUrl) {
+  // Prime on a URL we'll actually scrape. Navigating from homepage straight
+  // to a `me=<merchant>` search URL right after an address-change gets
+  // soft-blocked (503) by Amazon's bot heuristics — visiting the real
+  // target first avoids that pattern.
+  await page.goto(primeUrl || origin + '/', { waitUntil: 'load', timeout: 90000 });
   await page
     .waitForSelector('#nav-global-location-popover-link', { timeout: 45000 })
     .catch(() => {
@@ -38,15 +42,7 @@ async function setDeliveryCountry(page, origin, countryCode) {
       `Failed to set delivery country to ${countryCode} at ${origin} (status=${result.status})`,
     );
   }
-  // Verify: reload home page and read the ship-to label. If it doesn't reflect
-  // the new country, the server silently ignored the change (common on amazon.co.uk
-  // for guest sessions when switching to a country requiring sign-in).
-  await page.goto(origin + '/', { waitUntil: 'load', timeout: 90000 });
-  const actualShipTo = await page
-    .locator('#glow-ingress-line2')
-    .innerText()
-    .catch(() => '');
-  console.log(`  verified ship-to label: "${actualShipTo.trim() || '(not found)'}"`);
+  // (Ship-to label is verified on the search page diag log in scrapeAllPages.)
 }
 
 async function dumpArtifacts(page, label) {
@@ -345,7 +341,9 @@ async function main() {
     if (deliverTo) {
       try {
         console.log(`\n[${origin}] setting delivery to ${deliverTo}`);
-        await setDeliveryCountry(page, origin, deliverTo);
+        // Prime on the first target URL so we avoid the homepage→merchant-URL
+        // navigation pattern that triggers Amazon's 503 soft-block.
+        await setDeliveryCountry(page, origin, deliverTo, group[0].url);
         console.log(`[${origin}] delivery set to ${deliverTo}`);
       } catch (err) {
         console.error(`[${origin}] failed to set delivery: ${err.message}`);
