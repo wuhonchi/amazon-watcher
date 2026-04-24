@@ -1,14 +1,8 @@
 [
   {
-    "slug": "ca-pokemon-amazonca",
-    "name": "Pokemon TCG — Amazon.ca (Sold by Amazon.ca, Best Sellers)",
-    "url": "https://www.amazon.ca/s?k=Pokemon+tcg&rh=p_6%3AA3DWYIK6Y9EEQB&s=popularity-rank",
-    "deliverTo": "CA"
-  },
-  {
     "slug": "us-pokemon-amazon-export",
-    "name": "Pokemon TCG — Amazon US (Amazon Export Sales, ship to HK, Best Sellers)",
-    "url": "https://www.amazon.com/s?k=pokemon+tcg&i=merchant-items&me=A2XZ7JICGUQ1CX&rh=p_123%3A325733&s=popularity-rank",
+    "name": "Pokemon TCG — Amazon US (Amazon Export Sales, ship to HK, Price High→Low)",
+    "url": "https://www.amazon.com/s?k=pokemon+tcg&me=A2XZ7JICGUQ1CX&rh=p_123%3A325733&s=price-desc-rank",
     "deliverTo": "HK"
   },
   {
@@ -16,5 +10,11 @@
     "name": "Pokemon TCG — Amazon.co.uk (ship to HK, Best Sellers)",
     "url": "https://www.amazon.co.uk/s?k=pokemon+tcg&rh=p_6%3AA3P5ROKL5A1OLE&s=exact-aware-popularity-rank&currency=GBP",
     "deliverTo": "HK"
+  },
+  {
+    "slug": "ca-pokemon-amazonca",
+    "name": "Pokemon TCG — Amazon.ca (Sold by Amazon.ca, Best Sellers)",
+    "url": "https://www.amazon.ca/s?k=Pokemon+tcg&rh=p_6%3AA3DWYIK6Y9EEQB&s=popularity-rank",
+    "deliverTo": "CA"
   }
 ]
