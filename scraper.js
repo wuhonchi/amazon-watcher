@@ -386,11 +386,14 @@ function buildCombinedCaption({ perCountry, rates }) {
     lines.push('<i>No new items or price drops.</i>');
   }
 
-  let text = lines.join('\n');
-  if (text.length > CAPTION_MAX) {
-    text = text.slice(0, CAPTION_MAX - 2) + '…';
-  }
-  return text;
+  const text = lines.join('\n');
+  // Telegram rejects captions mid-HTML-tag (Unclosed start tag). Truncate on a
+  // newline boundary so we never cut inside an <a>…</a> or <b>…</b> block.
+  if (text.length <= CAPTION_MAX) return text;
+  const target = CAPTION_MAX - 2;
+  const nl = text.lastIndexOf('\n', target);
+  const cut = nl > 0 ? nl : target;
+  return text.slice(0, cut) + '\n…';
 }
 
 async function sendCombined({ perCountry, rates }) {
