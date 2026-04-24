@@ -123,6 +123,21 @@ async function scrapeAllPages(page, url) {
         /* zero-result page — fine, we'll just return what we have */
       });
 
+    // Diagnostic: what ship-to does the SEARCH page itself show, and what's the result header?
+    const diag = await page.evaluate(() => {
+      const glow = document.querySelector(
+        '#glow-ingress-line2, #nav-global-location-slot #glow-ingress-line2',
+      );
+      const header = document.querySelector(
+        '.s-breadcrumb, [data-component-type="s-result-info-bar"], .sg-col-14-of-20 h2',
+      );
+      return {
+        shipTo: glow ? glow.innerText.trim() : null,
+        header: header ? header.innerText.trim().slice(0, 200) : null,
+      };
+    });
+    console.log(`  page ${p} diag: shipTo=${JSON.stringify(diag.shipTo)} header=${JSON.stringify(diag.header)}`);
+
     const items = await extractItems(page, origin);
     let added = 0;
     for (const i of items) {
