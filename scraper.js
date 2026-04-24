@@ -69,7 +69,20 @@ async function extractItems(page, origin) {
       els
         .map((el) => {
           const asin = el.getAttribute('data-asin');
-          const titleEl = el.querySelector('h2 a span, h2 span, [data-cy="title-recipe"] span');
+          // Collect title candidates from several places and pick the longest —
+          // regions vary: amazon.co.uk often puts the brand in an h2 <span> before
+          // the real title anchor, so grabbing just the first span gives "Pokémon".
+          const candidates = [
+            el.querySelector('h2 a')?.getAttribute('aria-label'),
+            el.querySelector('h2 a')?.textContent,
+            el.querySelector('[data-cy="title-recipe"] a')?.textContent,
+            el.querySelector('[data-cy="title-recipe"]')?.textContent,
+            el.querySelector('h2')?.textContent,
+          ];
+          const title = candidates
+            .filter(Boolean)
+            .map((t) => t.replace(/\s+/g, ' ').trim())
+            .reduce((best, cur) => (cur.length > best.length ? cur : best), '');
           const priceEl = el.querySelector('.a-price .a-offscreen');
           const linkEl = el.querySelector(
             'a.a-link-normal.s-line-clamp-2, h2 a, a.a-link-normal[href*="/dp/"]',
@@ -83,7 +96,7 @@ async function extractItems(page, origin) {
           }
           return {
             asin,
-            title: titleEl?.textContent?.trim() || '',
+            title,
             price: priceEl?.textContent?.trim() || null,
             link,
           };
