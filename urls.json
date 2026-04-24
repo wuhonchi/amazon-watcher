@@ -8,13 +8,13 @@
   {
     "slug": "uk-pokemon-tcg",
     "name": "Pokemon TCG — Amazon.co.uk (ship to HK, Price High→Low)",
-    "url": "https://www.amazon.co.uk/s?k=pokemon+tcg&rh=p_6%3AA3P5ROKL5A1OLE&s=price-desc-rank&currency=GBP",
+    "url": "https://www.amazon.co.uk/s?k=pokemon+tcg&rh=p_6%3AA3P5ROKL5A1OLE%2Cp_123%3A325733&s=price-desc-rank",
     "deliverTo": "HK"
   },
   {
     "slug": "ca-pokemon-amazonca",
     "name": "Pokemon TCG — Amazon.ca (Sold by Amazon.ca, Price High→Low)",
-    "url": "https://www.amazon.ca/s?k=Pokemon+tcg&rh=p_6%3AA3DWYIK6Y9EEQB&s=price-desc-rank",
+    "url": "https://www.amazon.ca/s?k=Pokemon+tcg&rh=p_6%3AA3DWYIK6Y9EEQB%2Cp_123%3A325733&s=price-desc-rank",
     "deliverTo": "CA"
   }
 ]
