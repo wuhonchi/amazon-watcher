@@ -224,22 +224,30 @@ async function scrapeAllPages(page, url) {
   const all = [];
   let currentUrl = url;
 
+  const isBlocked = (status, title) =>
+    (status && status >= 400) ||
+    /robot|captcha|sorry|service\s*unavailable|^5\d\d\b/i.test(title || '');
+
   for (let p = 1; p <= MAX_PAGES; p++) {
     let title = '';
+    let status = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      await page.goto(currentUrl, { waitUntil: 'load', timeout: 90000 });
+      const resp = await page.goto(currentUrl, { waitUntil: 'load', timeout: 90000 });
+      status = resp?.status() ?? null;
       await page
         .evaluate(() => document.getElementById('redir-modal')?.remove())
         .catch(() => {});
       title = await page.title();
-      if (!/robot|captcha|sorry/i.test(title)) break;
+      if (!isBlocked(status, title)) break;
       const wait = 2000 * attempt;
-      console.log(`  page ${p} attempt ${attempt} blocked (${title}); retrying in ${wait}ms`);
+      console.log(
+        `  page ${p} attempt ${attempt} blocked (status=${status}, title="${title}"); retrying in ${wait}ms`,
+      );
       await page.waitForTimeout(wait);
     }
-    if (/robot|captcha|sorry/i.test(title)) {
+    if (isBlocked(status, title)) {
       await dumpArtifacts(page, `blocked-${new URL(currentUrl).host}-p${p}`);
-      throw new Error(`Blocked by Amazon after 3 attempts (title: ${title})`);
+      throw new Error(`Blocked by Amazon after 3 attempts (status=${status}, title="${title}")`);
     }
 
     await page
