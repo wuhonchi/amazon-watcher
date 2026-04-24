@@ -6,7 +6,7 @@ const SNAPSHOT_DIR = 'snapshots';
 const TG_TOKEN = process.env.TELEGRAM_TOKEN;
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID;
 const MAX_ITEMS_IN_MESSAGE = 10;
-const MAX_PAGES = 5;
+const MAX_PAGES = 1;
 
 async function setDeliveryCountry(page, origin, countryCode) {
   await page.goto(origin + '/', { waitUntil: 'load', timeout: 60000 });
