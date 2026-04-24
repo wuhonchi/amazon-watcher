@@ -9,19 +9,48 @@ const MAX_ITEMS_IN_MESSAGE = 10;
 const MAX_PAGES = 1;
 
 async function setDeliveryCountry(page, origin, countryCode) {
-  await page.goto(origin + '/', { waitUntil: 'load', timeout: 60000 });
-  await page.waitForSelector('#nav-global-location-popover-link', { timeout: 30000 });
-  const ok = await page.evaluate(async (cc) => {
-    const r = await fetch('/portal-migration/hz/glow/address-change?actionSource=glow', {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-      body: `locationType=COUNTRY&district=&countryCode=${cc}&storeContext=generic&pageType=Gateway&actionSource=glow`,
+  await page.goto(origin + '/', { waitUntil: 'load', timeout: 90000 });
+  await page
+    .waitForSelector('#nav-global-location-popover-link', { timeout: 45000 })
+    .catch(() => {
+      // Some regions render the header lazily — fall through and try the POST anyway.
     });
-    if (!r.ok) return false;
-    const j = await r.json().catch(() => null);
-    return !!(j && j.isAddressUpdated);
+  const result = await page.evaluate(async (cc) => {
+    try {
+      const r = await fetch('/portal-migration/hz/glow/address-change?actionSource=glow', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: `locationType=COUNTRY&district=&countryCode=${cc}&storeContext=generic&pageType=Gateway&actionSource=glow`,
+      });
+      const text = await r.text();
+      let updated = false;
+      try {
+        updated = !!JSON.parse(text).isAddressUpdated;
+      } catch {}
+      return { status: r.status, updated, bodyLen: text.length };
+    } catch (err) {
+      return { status: 0, updated: false, err: err.message };
+    }
   }, countryCode);
-  if (!ok) throw new Error(`Failed to set delivery country to ${countryCode} at ${origin}`);
+  console.log(`  address-change response:`, JSON.stringify(result));
+  if (!result.updated) {
+    throw new Error(
+      `Failed to set delivery country to ${countryCode} at ${origin} (status=${result.status})`,
+    );
+  }
+}
+
+async function dumpArtifacts(page, label) {
+  try {
+    await fs.mkdir('debug', { recursive: true });
+    const safe = label.replace(/[^a-z0-9._-]/gi, '_');
+    await page.screenshot({ path: `debug/${safe}.png`, fullPage: false }).catch(() => {});
+    const html = await page.content().catch(() => '');
+    await fs.writeFile(`debug/${safe}.html`, html.slice(0, 200_000));
+    console.log(`  [artifact] saved debug/${safe}.{png,html}`);
+  } catch (e) {
+    console.log('  [artifact] dump failed:', e.message);
+  }
 }
 
 async function extractItems(page, origin) {
@@ -64,7 +93,7 @@ async function scrapeAllPages(page, url) {
   for (let p = 1; p <= MAX_PAGES; p++) {
     let title = '';
     for (let attempt = 1; attempt <= 3; attempt++) {
-      await page.goto(currentUrl, { waitUntil: 'load', timeout: 60000 });
+      await page.goto(currentUrl, { waitUntil: 'load', timeout: 90000 });
       await page
         .evaluate(() => document.getElementById('redir-modal')?.remove())
         .catch(() => {});
@@ -75,6 +104,7 @@ async function scrapeAllPages(page, url) {
       await page.waitForTimeout(wait);
     }
     if (/robot|captcha|sorry/i.test(title)) {
+      await dumpArtifacts(page, `blocked-${new URL(currentUrl).host}-p${p}`);
       throw new Error(`Blocked by Amazon after 3 attempts (title: ${title})`);
     }
 
@@ -222,17 +252,36 @@ async function main() {
   }
 
   const browser = await chromium.launch({
-    args: ['--disable-blink-features=AutomationControlled'],
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+    ],
   });
+
+  // Per-origin locale so each Amazon domain gets the expected Accept-Language.
+  const localeByHost = {
+    'www.amazon.com': 'en-US',
+    'www.amazon.ca': 'en-CA',
+    'www.amazon.co.uk': 'en-GB',
+  };
 
   let hadError = false;
 
   for (const [origin, group] of byOrigin) {
+    const host = new URL(origin).host;
     const context = await browser.newContext({
       userAgent:
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 900 },
-      locale: 'en-US',
+      viewport: { width: 1366, height: 900 },
+      locale: localeByHost[host] || 'en-US',
+      extraHTTPHeaders: {
+        'Accept-Language': `${localeByHost[host] || 'en-US'},en;q=0.9`,
+      },
+    });
+    // Strip the `navigator.webdriver` giveaway before any page script runs.
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
     const page = await context.newPage();
 
@@ -245,6 +294,7 @@ async function main() {
         console.log(`[${origin}] delivery set to ${deliverTo}`);
       } catch (err) {
         console.error(`[${origin}] failed to set delivery: ${err.message}`);
+        await dumpArtifacts(page, `setDelivery-${new URL(origin).host}`);
         hadError = true;
       }
     }
