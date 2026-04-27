@@ -1,10 +1,10 @@
 name: Check Amazon
 
 on:
-  schedule:
-    # Offset 7-minute marks: avoids the heavy "*/10" cron contention window
-    # that delays GitHub Actions scheduled runs at the top of each 10-min slot.
-    - cron: '7,17,27,37,47,57 * * * *'
+  # Triggered every 10 min by an external cron (cron-job.org) hitting
+  # POST /actions/workflows/check.yml/dispatches. We dropped the native
+  # `schedule:` trigger because GitHub's scheduled runs were skipped /
+  # delayed by 30-90 minutes during peak load (best-effort by design).
   workflow_dispatch:
 
 permissions:
