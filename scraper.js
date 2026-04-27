@@ -521,9 +521,12 @@ async function main() {
         await setDeliveryCountry(page, origin, deliverTo, group[0].url, flow);
         console.log(`[${origin}] delivery set to ${deliverTo}`);
       } catch (err) {
-        console.error(`[${origin}] failed to set delivery: ${err.message}`);
-        await dumpArtifacts(page, `setDelivery-${host}`);
-        hadError = true;
+        // Non-fatal: when the runner already exits from the desired country
+        // (e.g. Surfshark HK exit + deliverTo=HK), Amazon returns the change
+        // POST with no JSON body and we treat that as a failure even though
+        // the search page below still shows the right ship-to. Keep going
+        // and let the in-page diag confirm whether ship-to is correct.
+        console.warn(`[${origin}] address-change skipped: ${err.message}`);
       }
     }
 
