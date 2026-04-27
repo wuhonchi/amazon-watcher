@@ -390,9 +390,13 @@ function formatItemLine(kind, item, rates) {
   // kind: 'new' | 'drop'
   const emoji = kind === 'new' ? '✅' : '🔻';
   const titleHtml = `<a href="${escapeHtml(item.link)}">${escapeHtml(truncate(item.title, 55))}</a>`;
+  // amazon.com (Export Sales) already returns prices in HKD when ship-to=HK,
+  // so showing "HK$X (≈HK$X)" would be redundant. Skip the conversion suffix
+  // whenever the native currency is already HKD.
+  const isHkdNative = item.currency === 'HKD';
   if (kind === 'new') {
     const native = fmtNative(item.priceValue, item.currency);
-    const hkd = toHkd(item.priceValue, item.currency, rates);
+    const hkd = isHkdNative ? null : toHkd(item.priceValue, item.currency, rates);
     const priceTxt = item.priceValue != null
       ? `${escapeHtml(native)}${hkd ? ` <i>(≈HK$${hkd})</i>` : ''}`
       : '<i>price N/A</i>';
@@ -401,8 +405,8 @@ function formatItemLine(kind, item, rates) {
   // drop
   const oldN = fmtNative(item.oldPriceValue, item.currency);
   const newN = fmtNative(item.priceValue, item.currency);
-  const oldH = toHkd(item.oldPriceValue, item.currency, rates);
-  const newH = toHkd(item.priceValue, item.currency, rates);
+  const oldH = isHkdNative ? null : toHkd(item.oldPriceValue, item.currency, rates);
+  const newH = isHkdNative ? null : toHkd(item.priceValue, item.currency, rates);
   const hkdPart =
     oldH && newH ? ` <i>(≈HK$${oldH} → HK$${newH})</i>` : '';
   return `${emoji} ${titleHtml} — <s>${escapeHtml(oldN)}</s> → ${escapeHtml(newN)}${hkdPart}`;
