@@ -355,14 +355,23 @@ function diffInteresting(oldItems, newItems, defaultCurrency) {
   for (const i of newItems) {
     const o = oldMap.get(i.asin);
     if (!o) continue;
-    // Prefer stored priceValue, else re-parse.
-    const oldV =
+    // Prefer stored priceValue + currency, else re-parse from raw price string.
+    const oldParsed =
       typeof o.priceValue === 'number'
-        ? o.priceValue
-        : parsePrice(o.price, defaultCurrency)?.value ?? null;
+        ? { value: o.priceValue, currency: o.currency || defaultCurrency }
+        : parsePrice(o.price, o.currency || defaultCurrency);
+    const oldV = oldParsed?.value ?? null;
+    const oldC = oldParsed?.currency ?? null;
     const newV = typeof i.priceValue === 'number' ? i.priceValue : null;
+    const newC = i.currency ?? null;
     if (oldV == null || newV == null) continue;
-    if (newV < oldV) dropped.push({ ...i, oldPrice: o.price, oldPriceValue: oldV });
+    // Currency must match to compare meaningfully — Amazon sometimes flips
+    // a domain's display currency between runs (e.g. UK price shown as HKD
+    // one week, £ the next), and a raw numeric compare across currencies
+    // would falsely report a drop / rise.
+    if (oldC && newC && oldC !== newC) continue;
+    if (newV < oldV)
+      dropped.push({ ...i, oldPrice: o.price, oldPriceValue: oldV, oldCurrency: oldC });
   }
   return { added, dropped };
 }
@@ -402,11 +411,14 @@ function formatItemLine(kind, item, rates) {
       : '<i>price N/A</i>';
     return `${emoji} ${titleHtml} — ${priceTxt}`;
   }
-  // drop
-  const oldN = fmtNative(item.oldPriceValue, item.currency);
-  const newN = fmtNative(item.priceValue, item.currency);
-  const oldH = isHkdNative ? null : toHkd(item.oldPriceValue, item.currency, rates);
-  const newH = isHkdNative ? null : toHkd(item.priceValue, item.currency, rates);
+  // drop — old/new currency might differ in pathological cases, render each
+  // with its own native symbol just to be defensive.
+  const oldCur = item.oldCurrency || item.currency;
+  const newCur = item.currency;
+  const oldN = fmtNative(item.oldPriceValue, oldCur);
+  const newN = fmtNative(item.priceValue, newCur);
+  const oldH = oldCur === 'HKD' ? null : toHkd(item.oldPriceValue, oldCur, rates);
+  const newH = newCur === 'HKD' ? null : toHkd(item.priceValue, newCur, rates);
   const hkdPart =
     oldH && newH ? ` <i>(≈HK$${oldH} → HK$${newH})</i>` : '';
   return `${emoji} ${titleHtml} — <s>${escapeHtml(oldN)}</s> → ${escapeHtml(newN)}${hkdPart}`;
