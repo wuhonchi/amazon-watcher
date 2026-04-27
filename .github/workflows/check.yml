@@ -75,11 +75,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node scraper.js
 
-      - name: Disconnect VPN
-        if: always()
-        run: |
-          sudo killall openvpn 2>/dev/null || true
-          rm -f /tmp/vpn-creds.txt /tmp/openvpn.pid /tmp/openvpn.log
+      # IMPORTANT: do all outbound network steps (artifact upload, git push)
+      # BEFORE disconnecting the VPN. Killing openvpn leaves stale routes on
+      # tun0 long enough that subsequent connections SSL-timeout.
 
       - name: Upload debug artifacts on failure
         if: failure()
@@ -102,3 +100,10 @@ jobs:
             git commit -m "chore: update snapshots $(date -u +%Y-%m-%dT%H:%MZ)"
             git push
           fi
+
+      - name: Disconnect VPN
+        if: always()
+        run: |
+          sudo killall openvpn 2>/dev/null || true
+          sudo rm -f /tmp/vpn-creds.txt /tmp/openvpn.pid /tmp/openvpn.log
+          true
