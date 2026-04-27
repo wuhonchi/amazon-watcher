@@ -2,7 +2,9 @@ name: Check Amazon
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    # Offset 7-minute marks: avoids the heavy "*/10" cron contention window
+    # that delays GitHub Actions scheduled runs at the top of each 10-min slot.
+    - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
 
 permissions:
