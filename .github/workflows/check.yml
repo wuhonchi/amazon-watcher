@@ -29,11 +29,57 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      - name: Install OpenVPN
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openvpn
+
+      - name: Connect Surfshark VPN (HK exit)
+        env:
+          SURFSHARK_USER: ${{ secrets.SURFSHARK_USER }}
+          SURFSHARK_PASS: ${{ secrets.SURFSHARK_PASS }}
+        run: |
+          # Auth credentials file (deleted on disconnect)
+          umask 077
+          printf '%s\n%s\n' "$SURFSHARK_USER" "$SURFSHARK_PASS" > /tmp/vpn-creds.txt
+
+          # Connect — daemonised so the runner can keep going
+          sudo openvpn \
+            --config vpn-configs/hk-hkg.ovpn \
+            --auth-user-pass /tmp/vpn-creds.txt \
+            --daemon vpn-watcher \
+            --log /tmp/openvpn.log \
+            --writepid /tmp/openvpn.pid
+
+          # Wait up to 30s for the tun0 interface to come up
+          for i in $(seq 1 30); do
+            if ip addr show tun0 2>/dev/null | grep -q 'inet '; then
+              echo "VPN tunnel up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          if ! ip addr show tun0 2>/dev/null | grep -q 'inet '; then
+            echo "VPN failed to connect within 30s — log tail:"
+            sudo tail -n 30 /tmp/openvpn.log || true
+            exit 1
+          fi
+
+          # Sanity check via Cloudflare's CDN-IP service (returns nothing sensitive)
+          curl --max-time 10 -s https://cloudflare.com/cdn-cgi/trace | grep -E '^(loc|colo)=' || true
+
       - name: Run scraper
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node scraper.js
+
+      - name: Disconnect VPN
+        if: always()
+        run: |
+          sudo killall openvpn 2>/dev/null || true
+          rm -f /tmp/vpn-creds.txt /tmp/openvpn.pid /tmp/openvpn.log
 
       - name: Upload debug artifacts on failure
         if: failure()
