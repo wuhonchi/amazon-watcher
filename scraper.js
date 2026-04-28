@@ -82,15 +82,22 @@ async function fetchHkdRates() {
   }
 }
 
+function roundToTen(n) {
+  return Math.round(n / 10) * 10;
+}
+
 function toHkd(value, currency, rates) {
   const r = rates[currency];
   if (!r || value == null) return null;
-  return Math.round(value * r);
+  return roundToTen(value * r);
 }
 
 function fmtNative(value, currency) {
   if (value == null) return '';
   const sym = currencySymbol[currency] ?? `${currency} `;
+  // HKD prices look chunkier when rounded to the nearest 10 — matches how
+  // people actually mention prices in HK ("六百" not "595.27").
+  if (currency === 'HKD') return `${sym}${roundToTen(value)}`;
   return `${sym}${value.toFixed(2)}`;
 }
 
