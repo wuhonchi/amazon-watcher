@@ -377,8 +377,13 @@ function diffInteresting(oldItems, newItems, defaultCurrency) {
     // one week, £ the next), and a raw numeric compare across currencies
     // would falsely report a drop / rise.
     if (oldC && newC && oldC !== newC) continue;
-    if (newV < oldV)
-      dropped.push({ ...i, oldPrice: o.price, oldPriceValue: oldV, oldCurrency: oldC });
+    if (newV >= oldV) continue;
+    // Suppress micro-drops that would render identically after rounding.
+    // HKD displays are rounded to the nearest 10, so e.g. 214 → 208 both
+    // show as "HK$210 → HK$210" — useless noise. Require the rounded
+    // value to actually differ.
+    if (newC === 'HKD' && roundToTen(oldV) === roundToTen(newV)) continue;
+    dropped.push({ ...i, oldPrice: o.price, oldPriceValue: oldV, oldCurrency: oldC });
   }
   return { added, dropped };
 }
