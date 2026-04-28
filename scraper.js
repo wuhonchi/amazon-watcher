@@ -461,9 +461,17 @@ function buildCombinedCaption({ perCountry, rates }) {
 }
 
 async function sendCombined({ perCountry, rates }) {
-  // Always send a single text message with a compact link preview for the
-  // first interesting item (gives a ~60px thumbnail in a card at the bottom
-  // without occupying the whole message height like sendPhoto would).
+  // Suppress the message entirely when nothing interesting happened.
+  // A run that found "no new items, no price drops" used to still ping
+  // Telegram with a heartbeat — flooded the chat. Now we only notify on
+  // real signal.
+  const hasChanges = Object.values(perCountry).some(
+    (pc) => (pc?.added?.length || 0) > 0 || (pc?.dropped?.length || 0) > 0,
+  );
+  if (!hasChanges) {
+    console.log('[tg] no new items / price drops — skipping Telegram');
+    return;
+  }
   const text = buildCombinedCaption({ perCountry, rates });
   await tgApi('sendMessage', {
     text,
