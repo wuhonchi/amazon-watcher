@@ -431,7 +431,13 @@ async function scrapeAllPages(page, url) {
 
 function diffInteresting(oldItems, newItems, defaultCurrency) {
   const oldMap = new Map(oldItems.map((i) => [i.asin, i]));
-  const added = newItems.filter((i) => !oldMap.has(i.asin));
+  // A new ASIN with no parseable price is almost always "Currently
+  // unavailable" / pre-order without ASP set — surfacing it in Telegram
+  // tells the user nothing actionable. Skip it; once Amazon shows a price
+  // on a later run the same ASIN will diff in normally.
+  const added = newItems.filter(
+    (i) => !oldMap.has(i.asin) && typeof i.priceValue === 'number',
+  );
 
   const dropped = [];
   for (const i of newItems) {
