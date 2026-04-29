@@ -100,10 +100,20 @@ jobs:
           git add snapshots/
           if git diff --quiet --cached; then
             echo "No snapshot changes to commit."
-          else
-            git commit -m "chore: update snapshots $(date -u +%Y-%m-%dT%H:%MZ)"
-            git push
+            exit 0
           fi
+          git commit -m "chore: update snapshots $(date -u +%Y-%m-%dT%H:%MZ)"
+          # Concurrent runs can race on `main`; rebase + retry instead of failing.
+          for i in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "push attempt $i rejected, rebasing on latest origin/main"
+            git fetch origin main
+            git pull --rebase origin main
+          done
+          echo "push still failing after retries"
+          exit 1
 
       - name: Disconnect VPN
         if: always()
