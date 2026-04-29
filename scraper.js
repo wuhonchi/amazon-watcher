@@ -205,13 +205,15 @@ function parseBoosterCount(text) {
   };
 
   // Strong signal: words like "booster" / "contains N packs" make the count
-  // unambiguous.
+  // unambiguous. Allow up to 3 brand/qualifier words between the digit and
+  // "booster", so phrases like "8 Pokémon TCG booster packs" or "8 additional
+  // Pokémon TCG booster packs" match.
   const strong = [];
   const strongPatterns = [
-    /(\d+)\s*booster\s*packs?\b/g,
-    /(\d+)\s*pok[eé]mon\s*tcg\s*packs?\b/g,
-    /(\d+)\s*card\s*booster\s*packs?\b/g,
-    /\b(?:contains?|includes?|with|comes\s+with)\s*(\d+)\s*(?:additional\s+)?(?:booster\s+)?packs?\b/g,
+    /(\d+)\s+(?:[A-Za-zé.®'-]+\s+){0,3}booster\s*packs?\b/gi,
+    /(\d+)\s*pok[eé]mon\s*tcg\s*(?:booster\s*)?packs?\b/gi,
+    /(\d+)\s*card\s*booster\s*packs?\b/gi,
+    /\b(?:contains?|includes?|with|comes\s+with|receive)\s*(\d+)\s+(?:[A-Za-zé.®'-]+\s+){0,3}(?:booster\s+)?packs?\b/gi,
     /\b(\d+)\s*packs?\s*\)/g,
   ];
   for (const re of strongPatterns) {
