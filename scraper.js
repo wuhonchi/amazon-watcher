@@ -613,6 +613,74 @@ async function sendCombined({ perCountry, rates }) {
   });
 }
 
+const STATUS_FILE = path.join(SNAPSHOT_DIR, '_status.json');
+
+function buildStatusText(perCountry) {
+  const parts = [];
+  for (const code of ['US', 'UK', 'CA']) {
+    const pc = perCountry[code];
+    if (!pc) continue;
+    if (pc.count != null) parts.push(`${pc.flag} ${pc.count}`);
+    else parts.push(`${pc.flag} ⚠️`);
+  }
+  return `⏱ <b>${hkTimestamp()} HKT</b>\n${parts.join(' · ')}`;
+}
+
+async function updateStatusMessage(perCountry) {
+  if (!TG_TOKEN || !TG_CHAT) return;
+  const text = buildStatusText(perCountry);
+  let state = null;
+  try {
+    state = JSON.parse(await fs.readFile(STATUS_FILE, 'utf8'));
+  } catch {}
+
+  // Try to edit the existing pinned-style status message in place. Edits
+  // don't fire a notification on the user's device, so the status updates
+  // silently while real alerts (sendCombined) keep their notification.
+  if (state?.messageId) {
+    const editRes = await fetch(
+      `https://api.telegram.org/bot${TG_TOKEN}/editMessageText`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: TG_CHAT,
+          message_id: state.messageId,
+          text,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        }),
+      },
+    );
+    if (editRes.ok) {
+      console.log(`[tg] status message ${state.messageId} edited silently`);
+      return;
+    }
+    const body = await editRes.text();
+    // "message is not modified" just means same content — fine, treat as success.
+    if (/message is not modified/i.test(body)) {
+      console.log('[tg] status message unchanged');
+      return;
+    }
+    console.log(`[tg] edit failed (${editRes.status}); will send a new status message:`, body.slice(0, 120));
+  }
+
+  // First run, or the saved message_id is gone (user deleted it / 48h edit
+  // window expired): send a fresh one with notification suppressed and
+  // remember its id for next time.
+  const sendRes = await tgApi('sendMessage', {
+    text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    disable_notification: true,
+  });
+  const newId = sendRes?.result?.message_id;
+  if (newId) {
+    await fs.writeFile(STATUS_FILE, JSON.stringify({ messageId: newId }, null, 2));
+    console.log(`[tg] new status message ${newId} sent (silent) and saved`);
+  }
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 async function readSnapshot(file) {
@@ -778,6 +846,7 @@ async function main() {
 
   console.log('\n--- Sending combined Telegram message ---');
   await sendCombined({ perCountry, rates });
+  await updateStatusMessage(perCountry);
 
   if (hadError) process.exitCode = 1;
 }
