@@ -524,9 +524,16 @@ function formatItemLine(kind, item, rates) {
   // whenever the native currency is already HKD.
   const isHkdNative = item.currency === 'HKD';
   const perPack = perPackHkd(item, rates);
-  const perPackTxt = perPack
-    ? ` <i>· ${item.boosterPacks} pack${item.boosterPacks > 1 ? 's' : ''} ~HK$${perPack}/ea</i>`
-    : '';
+  let perPackTxt = '';
+  if (perPack) {
+    perPackTxt = ` <i>· ${item.boosterPacks} pack${item.boosterPacks > 1 ? 's' : ''} ~HK$${perPack}/ea</i>`;
+  } else if (item.boosterPacks === null || typeof item.boosterPacks === 'undefined') {
+    // Tried but couldn't determine — say so explicitly so the user knows the
+    // per-pack column is intentionally missing (vs us silently dropping it).
+    perPackTxt = ` <i>· packs N/A</i>`;
+  }
+  // boosterPacks === 0 (explicitly non-pack product like Battle Deck) → render
+  // nothing extra; the title already conveys it isn't a pack-based product.
   if (kind === 'new') {
     const native = fmtNative(item.priceValue, item.currency);
     const hkd = isHkdNative ? null : toHkd(item.priceValue, item.currency, rates);
