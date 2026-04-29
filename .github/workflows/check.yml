@@ -17,7 +17,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Higher than typical: first run after adding booster-pack detection
+    # walks every product page once. Subsequent runs only fetch new items.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

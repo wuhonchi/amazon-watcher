@@ -189,6 +189,81 @@ async function setDeliveryCountry(page, origin, countryCode, primeUrl, flow = 't
   }
 }
 
+// Heuristic: look at a product page's title + bullets + description and
+// extract how many booster packs are inside. Returns:
+//   integer >= 1 — best guess of pack count
+//   0            — explicitly a non-pack product (e.g. battle deck only)
+//   null         — couldn't determine
+function parseBoosterCount(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+
+  // Strong signal that this product has packs.
+  const counts = [];
+  const patterns = [
+    /(\d+)\s*booster\s*packs?\b/g,
+    /(\d+)\s*pok[eé]mon\s*tcg\s*packs?\b/g,
+    /(\d+)\s*card\s*booster\s*packs?\b/g,
+    /\b(?:contains?|includes?|with)\s*(\d+)\s*(?:additional\s+)?(?:booster\s+)?packs?\b/g,
+    /\b(\d+)\s*packs?\s*\)/g,
+  ];
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(lower)) !== null) {
+      const n = parseInt(m[1], 10);
+      if (n >= 1 && n <= 100) counts.push(n);
+    }
+  }
+
+  if (counts.length > 0) {
+    // Pick the value mentioned most often; tiebreak: largest (handles
+    // "10 booster packs (5 + 5 promo)" returning 10 over 5).
+    const tally = new Map();
+    for (const n of counts) tally.set(n, (tally.get(n) || 0) + 1);
+    return [...tally.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+  }
+
+  // Explicit non-pack products — Battle Decks / theme decks / single tins.
+  if (/\bbattle\s+deck\b/.test(lower) && !/\bbooster\b/.test(lower)) return 0;
+  if (/\btin\b/.test(lower) && !/\bbooster\b/.test(lower)) return 0;
+
+  return null;
+}
+
+async function extractBoosterCount(page, url) {
+  try {
+    await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+    // Let any AWS WAF JS challenge resolve first.
+    await page
+      .waitForFunction(
+        () =>
+          typeof window.gokuProps === 'undefined' &&
+          typeof window.awsWafCookieDomainList === 'undefined',
+        null,
+        { timeout: 15000 },
+      )
+      .catch(() => {});
+    await page.waitForSelector('#productTitle, #title', { timeout: 15000 }).catch(() => {});
+    const text = await page.evaluate(() => {
+      const sel = [
+        '#productTitle',
+        '#title',
+        '#feature-bullets',
+        '#productFactsDesktopExpander',
+        '#productDescription',
+      ];
+      return sel
+        .map((s) => document.querySelector(s)?.innerText || '')
+        .filter(Boolean)
+        .join('\n');
+    });
+    return parseBoosterCount(text);
+  } catch (err) {
+    console.log(`  [booster] fetch failed: ${err.message.slice(0, 80)}`);
+    return null;
+  }
+}
+
 async function dumpArtifacts(page, label) {
   try {
     await fs.mkdir('debug', { recursive: true });
@@ -378,11 +453,14 @@ function diffInteresting(oldItems, newItems, defaultCurrency) {
     // would falsely report a drop / rise.
     if (oldC && newC && oldC !== newC) continue;
     if (newV >= oldV) continue;
-    // Suppress micro-drops that would render identically after rounding.
-    // HKD displays are rounded to the nearest 10, so e.g. 214 → 208 both
-    // show as "HK$210 → HK$210" — useless noise. Require the rounded
-    // value to actually differ.
-    if (newC === 'HKD' && roundToTen(oldV) === roundToTen(newV)) continue;
+    // Suppress drops that disappear after the same rounding the message uses
+    // for display: HKD rounds to nearest 10 (210 vs 208 → both HK$210), other
+    // currencies round to integer (£35.00 vs £34.99 → both £35). This kills
+    // the "HK$210 → HK$210" / "£35 → £35" noise alerts without missing real
+    // drops that move at least one rounding step.
+    const oldRounded = newC === 'HKD' ? roundToTen(oldV) : Math.round(oldV);
+    const newRounded = newC === 'HKD' ? roundToTen(newV) : Math.round(newV);
+    if (oldRounded === newRounded) continue;
     dropped.push({ ...i, oldPrice: o.price, oldPriceValue: oldV, oldCurrency: oldC });
   }
   return { added, dropped };
@@ -407,6 +485,19 @@ async function tgApi(method, payload) {
   return res.json();
 }
 
+// Compute per-booster-pack price in HKD (rounded to nearest $10) when the
+// product page told us how many packs are inside.
+function perPackHkd(item, rates) {
+  if (!item.boosterPacks || item.boosterPacks <= 0) return null;
+  if (item.priceValue == null) return null;
+  const totalHkd =
+    item.currency === 'HKD'
+      ? item.priceValue
+      : (rates[item.currency] || 0) * item.priceValue;
+  if (!totalHkd) return null;
+  return roundToTen(totalHkd / item.boosterPacks);
+}
+
 function formatItemLine(kind, item, rates) {
   // kind: 'new' | 'drop'
   const emoji = kind === 'new' ? '✅' : '🔻';
@@ -415,13 +506,17 @@ function formatItemLine(kind, item, rates) {
   // so showing "HK$X (≈HK$X)" would be redundant. Skip the conversion suffix
   // whenever the native currency is already HKD.
   const isHkdNative = item.currency === 'HKD';
+  const perPack = perPackHkd(item, rates);
+  const perPackTxt = perPack
+    ? ` <i>· ${item.boosterPacks} pack${item.boosterPacks > 1 ? 's' : ''} ~HK$${perPack}/ea</i>`
+    : '';
   if (kind === 'new') {
     const native = fmtNative(item.priceValue, item.currency);
     const hkd = isHkdNative ? null : toHkd(item.priceValue, item.currency, rates);
     const priceTxt = item.priceValue != null
       ? `${escapeHtml(native)}${hkd ? ` <i>(≈HK$${hkd})</i>` : ''}`
       : '<i>price N/A</i>';
-    return `${emoji} ${titleHtml} — ${priceTxt}`;
+    return `${emoji} ${titleHtml} — ${priceTxt}${perPackTxt}`;
   }
   // drop — old/new currency might differ in pathological cases, render each
   // with its own native symbol just to be defensive.
@@ -433,7 +528,7 @@ function formatItemLine(kind, item, rates) {
   const newH = newCur === 'HKD' ? null : toHkd(item.priceValue, newCur, rates);
   const hkdPart =
     oldH && newH ? ` <i>(≈HK$${oldH} → HK$${newH})</i>` : '';
-  return `${emoji} ${titleHtml} — <s>${escapeHtml(oldN)}</s> → ${escapeHtml(newN)}${hkdPart}`;
+  return `${emoji} ${titleHtml} — <s>${escapeHtml(oldN)}</s> → ${escapeHtml(newN)}${hkdPart}${perPackTxt}`;
 }
 
 function buildCombinedCaption({ perCountry, rates }) {
@@ -598,6 +693,30 @@ async function main() {
           hadError = true;
           continue;
         }
+
+        // Reuse cached booster-pack counts from previous snapshot to avoid
+        // re-scraping every product page each cron tick. Only fetch for items
+        // that don't yet have a `boosterPacks` field stored.
+        const prevBoosters = new Map(
+          (prev || [])
+            .filter((p) => typeof p.boosterPacks !== 'undefined')
+            .map((p) => [p.asin, p.boosterPacks]),
+        );
+        let fetched = 0;
+        for (const item of items) {
+          if (prevBoosters.has(item.asin)) {
+            item.boosterPacks = prevBoosters.get(item.asin);
+            continue;
+          }
+          if (!item.link) {
+            item.boosterPacks = null;
+            continue;
+          }
+          fetched++;
+          item.boosterPacks = await extractBoosterCount(page, item.link);
+          await page.waitForTimeout(800 + Math.random() * 700); // gentle pacing
+        }
+        if (fetched > 0) console.log(`booster-pack fetch: ${fetched} new product pages`);
 
         perCountry[country.code].count =
           (perCountry[country.code].count ?? 0) + items.length;
