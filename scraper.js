@@ -198,30 +198,41 @@ function parseBoosterCount(text) {
   if (!text) return null;
   const lower = text.toLowerCase();
 
-  // Strong signal that this product has packs.
-  const counts = [];
-  const patterns = [
+  const tally = (counts) => {
+    const t = new Map();
+    for (const n of counts) t.set(n, (t.get(n) || 0) + 1);
+    return [...t.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+  };
+
+  // Strong signal: words like "booster" / "contains N packs" make the count
+  // unambiguous.
+  const strong = [];
+  const strongPatterns = [
     /(\d+)\s*booster\s*packs?\b/g,
     /(\d+)\s*pok[eé]mon\s*tcg\s*packs?\b/g,
     /(\d+)\s*card\s*booster\s*packs?\b/g,
-    /\b(?:contains?|includes?|with)\s*(\d+)\s*(?:additional\s+)?(?:booster\s+)?packs?\b/g,
+    /\b(?:contains?|includes?|with|comes\s+with)\s*(\d+)\s*(?:additional\s+)?(?:booster\s+)?packs?\b/g,
     /\b(\d+)\s*packs?\s*\)/g,
   ];
-  for (const re of patterns) {
+  for (const re of strongPatterns) {
     let m;
     while ((m = re.exec(lower)) !== null) {
       const n = parseInt(m[1], 10);
-      if (n >= 1 && n <= 100) counts.push(n);
+      if (n >= 1 && n <= 100) strong.push(n);
     }
   }
+  if (strong.length > 0) return tally(strong);
 
-  if (counts.length > 0) {
-    // Pick the value mentioned most often; tiebreak: largest (handles
-    // "10 booster packs (5 + 5 promo)" returning 10 over 5).
-    const tally = new Map();
-    for (const n of counts) tally.set(n, (tally.get(n) || 0) + 1);
-    return [...tally.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+  // Weak signal: bare "N packs" anywhere (e.g. "6 Packs, Promos" in titles).
+  // Bound to 1–50 to skip nonsense like "365 packs delivered".
+  const weak = [];
+  const weakRe = /(\d+)\s*packs?\b/g;
+  let m;
+  while ((m = weakRe.exec(lower)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (n >= 1 && n <= 50) weak.push(n);
   }
+  if (weak.length > 0) return tally(weak);
 
   // Explicit non-pack products — Battle Decks / theme decks / single tins.
   if (/\bbattle\s+deck\b/.test(lower) && !/\bbooster\b/.test(lower)) return 0;
@@ -700,18 +711,26 @@ async function main() {
           continue;
         }
 
-        // Reuse cached booster-pack counts from previous snapshot to avoid
-        // re-scraping every product page each cron tick. Only fetch for items
-        // that don't yet have a `boosterPacks` field stored.
+        // Reuse cached booster-pack counts from previous snapshot. Only cache
+        // a number — null cached entries are retried so improvements to the
+        // parser propagate without manual snapshot resets.
         const prevBoosters = new Map(
           (prev || [])
-            .filter((p) => typeof p.boosterPacks !== 'undefined')
+            .filter((p) => typeof p.boosterPacks === 'number')
             .map((p) => [p.asin, p.boosterPacks]),
         );
         let fetched = 0;
         for (const item of items) {
           if (prevBoosters.has(item.asin)) {
             item.boosterPacks = prevBoosters.get(item.asin);
+            continue;
+          }
+          // Cheap first pass: if the search-result title alone tells us the
+          // pack count (e.g. "...Premium Collection - 6 Packs"), skip the
+          // product-page fetch entirely.
+          const fromTitle = parseBoosterCount(item.title);
+          if (fromTitle !== null) {
+            item.boosterPacks = fromTitle;
             continue;
           }
           if (!item.link) {
