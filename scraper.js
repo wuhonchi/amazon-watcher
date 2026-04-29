@@ -444,13 +444,18 @@ async function scrapeAllPages(page, url) {
 
 function diffInteresting(oldItems, newItems, defaultCurrency) {
   const oldMap = new Map(oldItems.map((i) => [i.asin, i]));
-  // A new ASIN with no parseable price is almost always "Currently
-  // unavailable" / pre-order without ASP set — surfacing it in Telegram
-  // tells the user nothing actionable. Skip it; once Amazon shows a price
-  // on a later run the same ASIN will diff in normally.
-  const added = newItems.filter(
-    (i) => !oldMap.has(i.asin) && typeof i.priceValue === 'number',
-  );
+  // Surface an item the first time we have a real price for it. That covers:
+  //   1. brand-new ASIN with a price right away
+  //   2. ASIN we previously snapshotted with priceValue=null (unavailable /
+  //      pre-order at the time) and which now has a real price — the user
+  //      never saw the alert for #1, so we still alert here.
+  // Items that are still un-priced get skipped (no actionable signal).
+  const added = newItems.filter((i) => {
+    if (typeof i.priceValue !== 'number') return false;
+    const o = oldMap.get(i.asin);
+    if (!o) return true; // truly new
+    return typeof o.priceValue !== 'number'; // first time priced
+  });
 
   const dropped = [];
   for (const i of newItems) {
