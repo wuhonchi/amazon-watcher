@@ -7,7 +7,10 @@ const TG_TOKEN = process.env.TELEGRAM_TOKEN;
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID;
 const MAX_PAGES = 1;
 const MAX_MEDIA = 10; // Telegram sendMediaGroup limit
-const CAPTION_MAX = 1024;
+// Telegram limits: sendMessage = 4096 chars, sendMediaGroup caption = 1024.
+// We send via sendMessage, so the higher cap applies. Leaving a small safety
+// margin so any HTML escaping or follow-on emoji doesn't push us over.
+const CAPTION_MAX = 3900;
 
 // Default currency per domain (amazon.com $ = USD, amazon.ca $ = CAD, etc.).
 const currencyByHost = {
