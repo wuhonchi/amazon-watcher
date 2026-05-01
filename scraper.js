@@ -301,6 +301,17 @@ async function extractItems(page, origin) {
         .map((el) => {
           const asin = el.getAttribute('data-asin');
 
+          // Detect ads: Amazon flags sponsored cards via a span with the
+          // sponsored-label class, a "Sponsored" badge in aria-label, or by
+          // duplicating the word in the title. Mark them so we can filter
+          // before diffing — ads rotate constantly and pollute the diff.
+          const isSponsored =
+            !!el.querySelector('.puis-sponsored-label-text, .s-sponsored-label-text, [data-component-type="sb-loom-desktop"]') ||
+            /sponsored/i.test(
+              el.querySelector('.s-sponsored-label-info-icon, .s-sponsored-label')
+                ?.textContent || '',
+            );
+
           const clean = (t) => (t || '').replace(/\s+/g, ' ').trim();
           const ariaLabel = clean(el.querySelector('h2 a')?.getAttribute('aria-label'));
           const linkText = clean(el.querySelector('h2 a')?.textContent);
@@ -316,6 +327,10 @@ async function extractItems(page, origin) {
             ariaLabel ||
             linkText ||
             '';
+
+          // Final fallback ad signal: the title (or its sources) literally
+          // begins with "Sponsored" / has it duplicated.
+          const titleLooksSponsored = /^sponsored\b/i.test(title) || /\bsponsoredsponsored\b/i.test(title);
 
           const priceEl = el.querySelector('.a-price .a-offscreen');
           const priceRaw = priceEl?.textContent?.trim() || null;
@@ -337,9 +352,16 @@ async function extractItems(page, origin) {
             } catch {}
           }
 
-          return { asin, title, price: priceRaw, image, link };
+          return {
+            asin,
+            title,
+            price: priceRaw,
+            image,
+            link,
+            sponsored: isSponsored || titleLooksSponsored,
+          };
         })
-        .filter((i) => i.asin),
+        .filter((i) => i.asin && !i.sponsored),
     origin,
   );
 }
