@@ -103,14 +103,23 @@ jobs:
             exit 0
           fi
           git commit -m "chore: update snapshots $(date -u +%Y-%m-%dT%H:%MZ)"
-          # Concurrent runs can race on `main`; rebase + retry instead of failing.
+          # Concurrent runs both modify snapshots/*.json, so a plain rebase
+          # hits content conflicts. -X theirs always keeps our (latest) scrape
+          # on conflict — the older committed snapshot becomes obsolete the
+          # moment our newer scrape lands anyway.
           for i in 1 2 3; do
             if git push; then
               exit 0
             fi
             echo "push attempt $i rejected, rebasing on latest origin/main"
             git fetch origin main
-            git pull --rebase origin main
+            if ! git pull --rebase -X theirs origin main; then
+              echo "rebase failed even with -X theirs, aborting and resetting"
+              git rebase --abort || true
+              git fetch origin main
+              git reset --soft origin/main
+              git commit -m "chore: update snapshots $(date -u +%Y-%m-%dT%H:%MZ) (after race)" || true
+            fi
           done
           echo "push still failing after retries"
           exit 1
