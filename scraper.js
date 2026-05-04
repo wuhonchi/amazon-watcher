@@ -467,18 +467,52 @@ async function scrapeAllPages(page, url) {
 
 // ─── Diff ───────────────────────────────────────────────────────────────────
 
-function diffInteresting(oldItems, newItems, defaultCurrency) {
-  const oldMap = new Map(oldItems.map((i) => [i.asin, i]));
+// How long an ASIN that drops off page 1 is still considered "seen" — keeps
+// flapping items (rank position 16-17 that bounce in/out every few runs)
+// from re-firing as new arrivals.
+const SEEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function isWithinWindow(item, now) {
+  if (!item?.lastSeen) return true; // legacy entries (no lastSeen) treated as fresh
+  const ts = Date.parse(item.lastSeen);
+  return Number.isFinite(ts) && now - ts < SEEN_WINDOW_MS;
+}
+
+// Merge the freshly scraped items with anything from the previous snapshot
+// that's still inside the SEEN_WINDOW. Current items take precedence (full
+// fresh data + lastSeen updated to now); older retained items keep their
+// existing fields and lastSeen so we know when to expire them.
+function mergeSnapshot(prev, current, now) {
+  const nowIso = new Date(now).toISOString();
+  const out = current.map((i) => ({ ...i, lastSeen: nowIso }));
+  const seen = new Set(out.map((i) => i.asin));
+  for (const old of prev || []) {
+    if (seen.has(old.asin)) continue;
+    if (!isWithinWindow(old, now)) continue;
+    out.push(old);
+  }
+  return out;
+}
+
+function diffInteresting(oldItems, newItems, defaultCurrency, now) {
+  // Compare against everything previously seen within the window — so an item
+  // that flapped out of page 1 a few runs ago and came back doesn't read as
+  // brand new.
+  const activeMap = new Map();
+  for (const o of oldItems || []) {
+    if (isWithinWindow(o, now)) activeMap.set(o.asin, o);
+  }
   // Surface an item the first time we have a real price for it. That covers:
   //   1. brand-new ASIN with a price right away
   //   2. ASIN we previously snapshotted with priceValue=null (unavailable /
   //      pre-order at the time) and which now has a real price — the user
   //      never saw the alert for #1, so we still alert here.
   // Items that are still un-priced get skipped (no actionable signal).
+  const oldMap = activeMap;
   const added = newItems.filter((i) => {
     if (typeof i.priceValue !== 'number') return false;
     const o = oldMap.get(i.asin);
-    if (!o) return true; // truly new
+    if (!o) return true; // truly new (or expired beyond window)
     return typeof o.priceValue !== 'number'; // first time priced
   });
 
@@ -848,8 +882,9 @@ async function main() {
         perCountry[country.code].count =
           (perCountry[country.code].count ?? 0) + items.length;
 
+        const now = Date.now();
         if (prev) {
-          const d = diffInteresting(prev, items, defaultCurrency);
+          const d = diffInteresting(prev, items, defaultCurrency, now);
           console.log(`changes: +${d.added.length} 🔻${d.dropped.length}`);
           perCountry[country.code].added.push(...d.added);
           perCountry[country.code].dropped.push(...d.dropped);
@@ -857,7 +892,11 @@ async function main() {
           console.log('first run — saving snapshot, no notification');
         }
 
-        await fs.writeFile(snapPath, JSON.stringify(items, null, 2));
+        // Persist the merged set (fresh items + recently-seen carryover) so
+        // ASINs that flap in/out of page 1 within SEEN_WINDOW_MS don't keep
+        // re-firing as "added" each time they reappear.
+        const merged = mergeSnapshot(prev, items, now);
+        await fs.writeFile(snapPath, JSON.stringify(merged, null, 2));
       } catch (err) {
         hadError = true;
         console.error(`[${t.slug}] error:`, err.message);
