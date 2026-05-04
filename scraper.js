@@ -5,7 +5,12 @@ import path from 'node:path';
 const SNAPSHOT_DIR = 'snapshots';
 const TG_TOKEN = process.env.TELEGRAM_TOKEN;
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID;
-const MAX_PAGES = 1;
+// Walk every result page so an item that gets ranked off page-1 doesn't
+// disappear from the snapshot and then re-fire as "added" when Amazon's
+// algorithm puts it back. Each Amazon page is ~16 items; 5 pages = 80,
+// which comfortably covers all 3 of our queries (~20-25 items each).
+// scrapeAllPages stops early as soon as there's no `next` link.
+const MAX_PAGES = 5;
 const MAX_MEDIA = 10; // Telegram sendMediaGroup limit
 // Telegram limits: sendMessage = 4096 chars, sendMediaGroup caption = 1024.
 // We send via sendMessage, so the higher cap applies. Leaving a small safety
