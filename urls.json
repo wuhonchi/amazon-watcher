@@ -17,5 +17,10 @@
     "name": "Pokemon TCG — Amazon.ca (Sold by Amazon.ca, Price High→Low)",
     "url": "https://www.amazon.ca/s?k=Pokemon+tcg&rh=p_6%3AA3DWYIK6Y9EEQB%2Cp_123%3A325733&s=price-desc-rank",
     "deliverTo": "CA"
+  },
+  {
+    "slug": "ca-pokemon-walmart",
+    "name": "Pokemon TCG — Walmart.ca (Sold by Walmart)",
+    "url": "https://www.walmart.ca/en/search?q=Pokemon+tcg&facet=retailer_type%3AWalmart"
   }
 ]
