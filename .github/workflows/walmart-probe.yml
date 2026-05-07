@@ -1,0 +1,75 @@
+name: Walmart Probe (no VPN)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install playwright
+      - run: npx playwright install --with-deps chromium
+
+      - name: Probe Walmart.ca with native runner IP
+        run: |
+          cat > probe.mjs << 'EOF'
+          import { chromium } from 'playwright';
+          import fs from 'node:fs/promises';
+
+          const URL = 'https://www.walmart.ca/en/search?q=Pokemon+tcg&facet=retailer_type%3AWalmart';
+
+          const b = await chromium.launch({
+            headless: true,
+            args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+          });
+          const ctx = await b.newContext({
+            userAgent:
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            viewport: { width: 1366, height: 900 },
+            locale: 'en-CA',
+            extraHTTPHeaders: { 'Accept-Language': 'en-CA,en;q=0.9' },
+          });
+          await ctx.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+          });
+          const p = await ctx.newPage();
+
+          const resp = await p.goto(URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+          console.log('STATUS:', resp?.status());
+          console.log('TITLE:', await p.title());
+
+          // Give Akamai any JS challenge time to resolve
+          await p.waitForTimeout(8000);
+
+          const meta = await p.evaluate(() => {
+            const txt = document.body.innerText.slice(0, 500);
+            const productTiles = document.querySelectorAll('[data-item-id], [data-automation-id="product-tile"]').length;
+            const captchaWords = (document.body.innerText.match(/verify|captcha|robot|access denied/gi) || []).length;
+            const hasPokemon = (document.body.innerText.match(/pokemon/gi) || []).length;
+            return { txt, productTiles, captchaWords, hasPokemon };
+          });
+          console.log('PRODUCT TILES:', meta.productTiles);
+          console.log('CAPTCHA HITS:', meta.captchaWords);
+          console.log('POKEMON MENTIONS:', meta.hasPokemon);
+          console.log('BODY (first 500 chars):', JSON.stringify(meta.txt));
+
+          await fs.mkdir('debug', { recursive: true });
+          await p.screenshot({ path: 'debug/walmart-novpn.png', fullPage: false });
+          await fs.writeFile('debug/walmart-novpn.html', (await p.content()).slice(0, 200_000));
+          console.log('Saved debug/walmart-novpn.{png,html}');
+          await b.close();
+          EOF
+          node probe.mjs
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: walmart-probe-${{ github.run_id }}
+          path: debug/
+          if-no-files-found: ignore
