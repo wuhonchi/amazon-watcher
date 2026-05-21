@@ -852,49 +852,60 @@ async function main() {
           continue;
         }
 
-        // Reuse cached booster-pack counts from previous snapshot. Only cache
-        // a number — null cached entries are retried so improvements to the
-        // parser propagate without manual snapshot resets.
+        // STEP A — cheap pass: copy any cached number, otherwise try parsing
+        // the search-result title (free). Leave product-page fetches for
+        // STEP C, gated on the diff so we only ever fetch for items the user
+        // will actually be alerted on.
         const prevBoosters = new Map(
           (prev || [])
-            .filter((p) => typeof p.boosterPacks === 'number')
+            .filter((p) => typeof p.boosterPacks !== 'undefined')
             .map((p) => [p.asin, p.boosterPacks]),
         );
-        let fetched = 0;
         for (const item of items) {
           if (prevBoosters.has(item.asin)) {
             item.boosterPacks = prevBoosters.get(item.asin);
             continue;
           }
-          // Cheap first pass: if the search-result title alone tells us the
-          // pack count (e.g. "...Premium Collection - 6 Packs"), skip the
-          // product-page fetch entirely.
           const fromTitle = parseBoosterCount(item.title);
-          if (fromTitle !== null) {
-            item.boosterPacks = fromTitle;
-            continue;
-          }
-          if (!item.link) {
-            item.boosterPacks = null;
-            continue;
-          }
-          fetched++;
-          item.boosterPacks = await extractBoosterCount(page, item.link);
-          await page.waitForTimeout(800 + Math.random() * 700); // gentle pacing
+          item.boosterPacks = fromTitle; // number or null
         }
-        if (fetched > 0) console.log(`booster-pack fetch: ${fetched} new product pages`);
 
         perCountry[country.code].count =
           (perCountry[country.code].count ?? 0) + items.length;
 
+        // STEP B — diff to decide what's worth alerting on (and worth a
+        // booster-page fetch).
         const now = Date.now();
+        let d = { added: [], dropped: [] };
         if (prev) {
-          const d = diffInteresting(prev, items, defaultCurrency, now);
+          d = diffInteresting(prev, items, defaultCurrency, now);
           console.log(`changes: +${d.added.length} 🔻${d.dropped.length}`);
-          perCountry[country.code].added.push(...d.added);
-          perCountry[country.code].dropped.push(...d.dropped);
         } else {
           console.log('first run — saving snapshot, no notification');
+        }
+
+        // STEP C — enrich only the alert items that still have no booster
+        // count. Stable, unchanged items keep whatever cached value they
+        // had (positive number / null) without consuming a product-page
+        // fetch. Typical run: 0-4 product pages instead of 5-15.
+        const alertSet = [...d.added, ...d.dropped];
+        let fetched = 0;
+        for (const item of alertSet) {
+          if (typeof item.boosterPacks === 'number') continue; // already known
+          if (!item.link) continue;
+          fetched++;
+          const n = await extractBoosterCount(page, item.link);
+          item.boosterPacks = n;
+          // Mirror onto the items[] entry so the snapshot persists it.
+          const persisted = items.find((i) => i.asin === item.asin);
+          if (persisted) persisted.boosterPacks = n;
+          await page.waitForTimeout(800 + Math.random() * 700); // gentle pacing
+        }
+        if (fetched > 0) console.log(`booster-pack fetch: ${fetched} alert items (was full scan)`);
+
+        if (prev) {
+          perCountry[country.code].added.push(...d.added);
+          perCountry[country.code].dropped.push(...d.dropped);
         }
 
         // Persist the merged set (fresh items + recently-seen carryover) so
