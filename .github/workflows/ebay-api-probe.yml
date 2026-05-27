@@ -8,13 +8,61 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Probe eBay OAuth + Browse API
+      - name: Probe eBay OAuth + Browse API + Marketplace Insights
         env:
           EBAY_APP_ID: ${{ secrets.EBAY_APP_ID }}
           EBAY_CERT_ID: ${{ secrets.EBAY_CERT_ID }}
         run: |
           set -e
-          echo "=== Stage 1: OAuth client_credentials ==="
+          echo "=== Stage 1: OAuth client_credentials (default scope) ==="
+          BASIC=$(printf '%s:%s' "$EBAY_APP_ID" "$EBAY_CERT_ID" | base64 -w0)
+          TOKEN_RESP=$(curl -sS -X POST 'https://api.ebay.com/identity/v1/oauth2/token' \
+            -H "Authorization: Basic $BASIC" \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=client_credentials' \
+            --data-urlencode 'scope=https://api.ebay.com/oauth/api_scope')
+
+          echo ""
+          echo "=== Stage 1b: OAuth with Marketplace Insights scope ==="
+          MI_TOKEN_RESP=$(curl -sS -X POST 'https://api.ebay.com/identity/v1/oauth2/token' \
+            -H "Authorization: Basic $BASIC" \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=client_credentials' \
+            --data-urlencode 'scope=https://api.ebay.com/oauth/api_scope/buy.marketplace.insights')
+          echo "MI scope token response:"
+          echo "$MI_TOKEN_RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); d["access_token"]="***REDACTED***" if "access_token" in d else None; print(json.dumps(d, indent=2))'
+          MI_TOKEN=$(echo "$MI_TOKEN_RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("access_token",""))')
+
+          if [ -n "$MI_TOKEN" ]; then
+            echo ""
+            echo "=== Stage 1c: Try Marketplace Insights item_sales/search ==="
+            curl -sS -G 'https://api.ebay.com/buy/marketplace_insights/v1_beta/item_sales/search' \
+              -H "Authorization: Bearer $MI_TOKEN" \
+              -H 'X-EBAY-C-MARKETPLACE-ID: EBAY_US' \
+              --data-urlencode 'q=pokemon' \
+              --data-urlencode 'filter=sellers:{psa}' \
+              --data-urlencode 'limit=5' > /tmp/mi-search.json
+            echo "MI HTTP response saved (size $(wc -c < /tmp/mi-search.json) bytes):"
+            python3 - <<'PY'
+            import json
+            with open('/tmp/mi-search.json') as f:
+                d = json.load(f)
+            if 'errors' in d:
+                print("MI returned ERRORS:")
+                for e in d['errors']:
+                    print(f"  • errorId={e.get('errorId')} domain={e.get('domain')}")
+                    print(f"    message: {e.get('message')}")
+                    print(f"    longMessage: {e.get('longMessage','')}")
+            else:
+                print(f"✅ MI WORKS — total sold matching: {d.get('total','?')}")
+                for i,it in enumerate(d.get('itemSales',[])[:3],1):
+                    print(f"{i}. {it}")
+            PY
+          else
+            echo "MI scope NOT granted — token request was rejected."
+          fi
+          echo ""
+          echo "=== Stage 2: Browse API (sanity check still works) ==="
           BASIC=$(printf '%s:%s' "$EBAY_APP_ID" "$EBAY_CERT_ID" | base64 -w0)
           TOKEN_RESP=$(curl -sS -X POST 'https://api.ebay.com/identity/v1/oauth2/token' \
             -H "Authorization: Basic $BASIC" \
