@@ -1,0 +1,130 @@
+name: eBay Probe (HK VPN)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install playwright
+      - run: npx playwright install --with-deps chromium
+
+      - name: Install OpenVPN
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openvpn
+
+      - name: Connect Surfshark VPN
+        env:
+          SURFSHARK_USER: ${{ secrets.SURFSHARK_USER }}
+          SURFSHARK_PASS: ${{ secrets.SURFSHARK_PASS }}
+        run: |
+          umask 077
+          printf '%s\n%s\n' "$SURFSHARK_USER" "$SURFSHARK_PASS" > /tmp/vpn-creds.txt
+          sudo openvpn --config vpn-configs/hk-hkg.ovpn --auth-user-pass /tmp/vpn-creds.txt \
+            --daemon vpn-watcher --log /tmp/openvpn.log --writepid /tmp/openvpn.pid
+          for i in $(seq 1 30); do
+            if ip addr show tun0 2>/dev/null | grep -q 'inet '; then echo "VPN up after ${i}s"; break; fi
+            sleep 1
+          done
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E '^(loc|colo)='
+
+      - name: Probe eBay
+        run: |
+          cat > probe.mjs << 'EOF'
+          import { chromium } from 'playwright';
+          import fs from 'node:fs/promises';
+
+          const SEARCH = 'https://www.ebay.com/sch/i.html?_ssn=psa&LH_Sold=1&_nkw=pokemon&_sop=1';
+
+          const b = await chromium.launch({
+            headless: true,
+            args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage'],
+          });
+          const ctx = await b.newContext({
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            viewport: { width: 1366, height: 900 },
+            locale: 'en-US',
+            extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+          });
+          await ctx.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+          });
+          const p = await ctx.newPage();
+
+          console.log('=== STAGE 1: search page ===');
+          const r1 = await p.goto(SEARCH, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          console.log('status:', r1?.status(), 'title:', (await p.title()).slice(0,80));
+          await p.waitForTimeout(5000);
+          const html1 = await p.content();
+          console.log('html length:', html1.length);
+
+          // Parse first 3 item IDs
+          const ids = [...html1.matchAll(/data-listingid=(\d+)>/g)].map(m=>m[1]).slice(0,3);
+          console.log('item IDs found:', ids);
+
+          if (!ids.length) {
+            console.log('NO IDS — saving for debug');
+            await fs.mkdir('debug', { recursive: true });
+            await fs.writeFile('debug/search.html', html1);
+            await b.close();
+            process.exit(1);
+          }
+
+          // Use the second one (first is sometimes "Shop on eBay" placeholder)
+          const targetId = ids[1] || ids[0];
+          console.log('\n=== STAGE 2: item detail for', targetId, '===');
+          await p.waitForTimeout(3000 + Math.random()*2000);
+          const r2 = await p.goto(`https://www.ebay.com/itm/${targetId}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          console.log('status:', r2?.status(), 'title:', (await p.title()).slice(0,80));
+          await p.waitForTimeout(3000);
+          const html2 = await p.content();
+          console.log('html length:', html2.length);
+
+          // Extract serialized state fields
+          const endMatch = html2.match(/"endDate":\{?"?value"?:?\s*"([^"]+)"/);
+          const startMatch = html2.match(/"startDate":\{?"?value"?:?\s*"([^"]+)"/);
+          const watchMatch = html2.match(/"watchCount":(\d+)/);
+          const psaMatch = html2.match(/PSA::PSACERT::(\d+)/);
+          const statusMatch = html2.match(/"listingStatus":"([^"]+)"/);
+          const fxMatch = html2.match(/"exchangeRate":\{[^}]*"value":([\d.]+)/);
+
+          console.log('\nExtracted:');
+          console.log('  endDate:', endMatch?.[1] || '(missing)');
+          console.log('  startDate:', startMatch?.[1] || '(missing)');
+          console.log('  listingStatus:', statusMatch?.[1] || '(missing)');
+          console.log('  watchCount:', watchMatch?.[1] || '(missing)');
+          console.log('  PSA cert:', psaMatch?.[1] || '(missing)');
+          console.log('  exchangeRate:', fxMatch?.[1] || '(missing)');
+
+          if (!endMatch) {
+            console.log('\nendDate missing — saving HTML');
+            await fs.mkdir('debug', { recursive: true });
+            await fs.writeFile('debug/itm.html', html2);
+          }
+
+          await b.close();
+          console.log('=== DONE ===');
+          EOF
+          node probe.mjs
+
+      - name: Disconnect VPN
+        if: always()
+        run: |
+          sudo killall openvpn 2>/dev/null || true
+          sudo rm -f /tmp/vpn-creds.txt /tmp/openvpn.pid /tmp/openvpn.log
+          true
+
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebay-probe-${{ github.run_id }}
+          path: debug/
+          if-no-files-found: ignore
