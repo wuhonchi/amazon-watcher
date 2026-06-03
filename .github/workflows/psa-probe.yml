@@ -8,31 +8,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Probe PSA Public API (clean runner IP, no VPN)
+      - name: Dump PSA swagger + test batch endpoints
         env:
           PSA_API_TOKEN: ${{ secrets.PSA_API_TOKEN }}
         run: |
-          echo "Runner public IP:"
-          curl -s --max-time 10 https://api.ipify.org; echo
+          AUTH="authorization: bearer $PSA_API_TOKEN"
+
+          echo "=== Full swagger.json — ALL endpoints ==="
+          curl -s --max-time 25 "https://api.psacard.com/publicapi/swagger.json" -o /tmp/sw.json -w "HTTP=%{http_code}\n"
+          python3 -c "
+          import json
+          try:
+              d=json.load(open('/tmp/sw.json'))
+              print('--- paths ---')
+              for path, methods in d.get('paths',{}).items():
+                  for m in methods:
+                      s=methods[m].get('summary','')
+                      print(f'  {m.upper():5} {path}  {s[:55]}')
+              # also dump the population response schema
+              print('--- schemas (names) ---')
+              for name in (d.get('components',{}).get('schemas',{}) or d.get('definitions',{})):
+                  print('  ', name)
+          except Exception as e:
+              print('parse fail', e); print(open('/tmp/sw.json').read()[:200])
+          "
 
           echo ""
-          echo "=== Test 1: GetByCertNumber (documented) ==="
-          curl -s --max-time 25 \
-            "https://api.psacard.com/publicapi/cert/GetByCertNumber/49004420" \
-            -H "authorization: bearer $PSA_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -w "\nHTTP=%{http_code}\n" | head -30
-
-          echo ""
-          echo "=== Test 2: GetPSASpecPopulation (the one we want) ==="
-          curl -s --max-time 25 \
-            "https://api.psacard.com/publicapi/pop/GetPSASpecPopulation/15299758" \
-            -H "authorization: bearer $PSA_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -w "\nHTTP=%{http_code}\n" | head -40
-
-          echo ""
-          echo "=== Interpretation ==="
-          echo "JSON + HTTP=200 → PSA API works from clean IP (deploy here, no VPN)"
-          echo "Cloudflare 'Attention Required' → clean IP also blocked"
-          echo "401/403 JSON → token issue (but IP OK)"
+          echo "=== Test speculative BATCH/bulk endpoints ==="
+          for u in \
+            "pop/GetPSASpecPopulations" \
+            "pop/GetPSASpecPopulationBatch" \
+            "pop/GetPSASpecPopulation?specIds=15299758,366613" \
+            "cert/GetByCertNumbers/49004420,15299758" ; do
+            code=$(curl -s --max-time 15 -o /tmp/r.txt -w "%{http_code}" "https://api.psacard.com/publicapi/$u" -H "$AUTH")
+            echo "  $code  $u"
+          done
