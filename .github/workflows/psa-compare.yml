@@ -1,0 +1,32 @@
+name: PSA Compare 3 Cards
+
+on:
+  workflow_dispatch:
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch + compare 3 cards
+        env:
+          PSA_API_TOKEN: ${{ secrets.PSA_API_TOKEN }}
+        run: |
+          AUTH="authorization: bearer $PSA_API_TOKEN"
+          for spec in 15299758 7622840 5994963; do
+            echo "=== specID $spec ==="
+            curl -s --max-time 25 "https://api.psacard.com/publicapi/pop/GetPSASpecPopulation/$spec" -H "$AUTH" -o /tmp/$spec.json -w "HTTP=%{http_code}\n"
+            python3 -c "
+          import json
+          d=json.load(open('/tmp/$spec.json'))
+          p=d['PSAPop']; dna=d.get('PSADNAPop',{})
+          tot=p['Total']; g10=p['Grade10']; g9=p['Grade9']; g8=p.get('Grade8',0)
+          gem = round(g10/tot*100,1) if tot else 0
+          r910 = round(g9/g10,2) if g10 else 0
+          print(f\"  {d['Description'][:65]}\")
+          print(f\"  Total graded: {tot}  |  PSA10: {g10} ({gem}% gem)  |  PSA9: {g9}  |  PSA8: {g8}\")
+          print(f\"  PSA9:PSA10 ratio: {r910}\")
+          print(f\"  Scarcity score (lower total = scarcer): {tot}\")
+          "
+            echo ""
+          done
