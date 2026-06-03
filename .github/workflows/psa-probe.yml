@@ -1,0 +1,38 @@
+name: PSA API Probe (no VPN)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe PSA Public API (clean runner IP, no VPN)
+        env:
+          PSA_API_TOKEN: ${{ secrets.PSA_API_TOKEN }}
+        run: |
+          echo "Runner public IP:"
+          curl -s --max-time 10 https://api.ipify.org; echo
+
+          echo ""
+          echo "=== Test 1: GetByCertNumber (documented) ==="
+          curl -s --max-time 25 \
+            "https://api.psacard.com/publicapi/cert/GetByCertNumber/49004420" \
+            -H "authorization: bearer $PSA_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -w "\nHTTP=%{http_code}\n" | head -30
+
+          echo ""
+          echo "=== Test 2: GetPSASpecPopulation (the one we want) ==="
+          curl -s --max-time 25 \
+            "https://api.psacard.com/publicapi/pop/GetPSASpecPopulation/15299758" \
+            -H "authorization: bearer $PSA_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -w "\nHTTP=%{http_code}\n" | head -40
+
+          echo ""
+          echo "=== Interpretation ==="
+          echo "JSON + HTTP=200 → PSA API works from clean IP (deploy here, no VPN)"
+          echo "Cloudflare 'Attention Required' → clean IP also blocked"
+          echo "401/403 JSON → token issue (but IP OK)"
