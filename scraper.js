@@ -59,6 +59,7 @@ function parsePrice(raw, defaultCurrency) {
   else if (/^HKD\b/i.test(s)) cur = 'HKD';
   else if (/^CA\$/i.test(s)) cur = 'CAD';
   else if (/^US\$/i.test(s)) cur = 'USD';
+  else if (/^HK\$/i.test(s)) cur = 'HKD';
   else if (/^£/.test(s)) cur = 'GBP';
   else if (/^€/.test(s)) cur = 'EUR';
   // A plain `$` falls through and uses defaultCurrency.
