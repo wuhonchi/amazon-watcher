@@ -46,6 +46,16 @@ const currencySymbol = {
   EUR: '€',
 };
 
+// Only notify for anniversary-set titles: the product name must contain
+// "25th" or "30th" (case-insensitive, digit-bounded so "125th" won't match).
+// Applies to both new-item and price-drop alerts; non-matching items are still
+// tracked in the snapshot (so they never re-fire) but never sent to Telegram.
+const NOTIFY_TITLE_PATTERN = /\b(?:25|30)th\b/i;
+
+function titleQualifiesForNotify(title) {
+  return NOTIFY_TITLE_PATTERN.test(title || '');
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function parsePrice(raw, defaultCurrency) {
@@ -552,7 +562,13 @@ function diffInteresting(oldItems, newItems, defaultCurrency, now) {
     if (oldRounded === newRounded) continue;
     dropped.push({ ...i, oldPrice: o.price, oldPriceValue: oldV, oldCurrency: oldC });
   }
-  return { added, dropped };
+  // Notify only for anniversary sets ("25th"/"30th" in the title). Filtering
+  // here keeps the booster-pack fetch gate, the "changes:" log, and the
+  // Telegram message all consistent on the same reduced set.
+  return {
+    added: added.filter((i) => titleQualifiesForNotify(i.title)),
+    dropped: dropped.filter((i) => titleQualifiesForNotify(i.title)),
+  };
 }
 
 // ─── Telegram ───────────────────────────────────────────────────────────────
